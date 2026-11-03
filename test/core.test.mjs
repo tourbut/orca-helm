@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { buildRows, classifyState, findMatches, fuzzyScore, parseArgs, pickTarget, plainLines, sortRows, tailLines, unwrap } from '../lib/core.mjs'
+import { buildRows, classifyState, findMatches, fuzzyScore, parseArgs, parseCommandLine, pickTarget, plainLines, sortRows, tailLines, unwrap } from '../lib/core.mjs'
 import { resolveOrcaBin } from '../lib/orca.mjs'
 
 test('unwrap prefers an RPC result and passes plain objects through', () => {
@@ -26,6 +26,21 @@ test('parseArgs reads positionals, flags, booleans, and passthrough', () => {
   assert.equal(dash.flags.text, '- item')
   assert.equal(dash.flags.lines, '-1')
   assert.equal(dash.flags['no-enter'], true)
+})
+
+test('parseCommandLine peels --out for every command and passes raw through', () => {
+  const raw = parseCommandLine(['--out', 'o.txt', 'raw', '--', 'worktree', 'ps', '--json'])
+  assert.deepEqual(raw.positionals, ['raw'])
+  assert.deepEqual(raw.rest, ['worktree', 'ps', '--json'])
+  assert.equal(raw.flags.out, 'o.txt')
+  // PowerShell drops `--`; flags after raw still belong to orca, and `--out` after `--` too.
+  assert.deepEqual(parseCommandLine(['raw', 'terminal', 'read', '--lines', '5']).rest, ['terminal', 'read', '--lines', '5'])
+  assert.deepEqual(parseCommandLine(['raw', '--', 'x', '--out', 'y']).rest, ['x', '--out', 'y'])
+  const status = parseCommandLine(['status', '--out=s.txt', '--json'])
+  assert.deepEqual(status.positionals, ['status'])
+  assert.equal(status.flags.out, 's.txt')
+  assert.equal(status.flags.json, true)
+  assert.equal(parseCommandLine(['status', '--out']).flags.out, true)
 })
 
 test('fuzzyScore orders exact, prefix, substring, subsequence, including Hangul', () => {
