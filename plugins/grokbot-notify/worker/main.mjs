@@ -97,6 +97,8 @@ export default async function activate(orca) {
   let warnedNoUrl = false
 
   await migrateAuth(orca)
+  // Move a pasted value out of plain settings now, not at the next alert.
+  orca.settings.onDidChange?.(() => migrateAuth(orca))
 
   async function forward(event, { debounce = true } = {}) {
     try {

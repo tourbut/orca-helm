@@ -25,9 +25,10 @@ function mockOrca() {
   const handlers = {}
   const logs = []
   let listener = null
+  let onSettings = null
   const orca = {
     log: (message) => logs.push(message),
-    settings: { get: async (key) => settings[key] },
+    settings: { get: async (key) => settings[key], onDidChange: (fn) => (onSettings = fn) },
     events: { on: (_event, fn) => (listener = fn) },
     panels: { handle: (name, fn) => (handlers[name] = fn) },
     host: {
@@ -42,12 +43,12 @@ function mockOrca() {
       },
     },
   }
-  return { orca, settings, secrets, handlers, logs, emit: (event) => listener(event) }
+  return { orca, settings, secrets, handlers, logs, emit: (event) => listener(event), changeSettings: () => onSettings() }
 }
 
 test('worker forwards done/waiting/blocked to the routine once, with auth, and retries a 503', async () => {
   const stub = await startStub([200, 200, 503, 200])
-  const { orca, settings, secrets, handlers, logs, emit } = mockOrca()
+  const { orca, settings, secrets, handlers, logs, emit, changeSettings } = mockOrca()
   try {
     await activate(orca)
     assert.deepEqual(await handlers['auth.set']({ url: stub.url, value: 'Authorization: Bearer s3cret' }), { ok: true })
@@ -76,6 +77,12 @@ test('worker forwards done/waiting/blocked to the routine once, with auth, and r
     const leaked = logs.filter((line) => line.includes('s3cret') || line.includes('t0ken'))
     assert.deepEqual(leaked, [])
     await assert.rejects(handlers['auth.set']({ url: 'ftp://x' }), /http\(s\)/)
+
+    // A value pasted into the Settings field moves to secrets as soon as settings change.
+    settings.authValue = 'Bearer n3w'
+    await changeSettings()
+    assert.equal(secrets.authValue, 'Bearer n3w')
+    assert.equal(settings.authValue, '')
   } finally {
     stub.close()
   }
