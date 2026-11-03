@@ -3,7 +3,7 @@
   "execution": "trusted-worker",
   "id": "grokbot-notify",
   "name": "Grok Bot Notify",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Forwards Orca agent status changes to a webhook. Built for Grok Bot webhook routines; works with any HTTP endpoint.",
   "license": "MIT",
   "repository": "https://github.com/tourbut/orca-helm",
@@ -14,7 +14,7 @@
     "orca": ">=1.4.246"
   },
   "pluginApi": 1,
-  "main": "worker/main.mjs",
+  "main": "plugins/grokbot-notify/worker/main.mjs",
   "contributes": {
     "events": [
       {

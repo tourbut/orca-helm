@@ -1,6 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildRows, classifyState, findMatches, fuzzyScore, parseArgs, sortRows, tailLines, unwrap } from '../lib/core.mjs'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { buildRows, classifyState, findMatches, fuzzyScore, parseArgs, pickTarget, plainLines, sortRows, tailLines, unwrap } from '../lib/core.mjs'
+import { resolveOrcaBin } from '../lib/orca.mjs'
 
 test('unwrap prefers an RPC result and passes plain objects through', () => {
   assert.deepEqual(unwrap({ ok: true, id: 1, result: { repos: [] } }), { repos: [] })
@@ -216,6 +220,14 @@ test('bare terminals are shell and shared labels stay distinct', () => {
   assert.equal(rows.find((row) => row.worktreeId === 'aa111111').worktree, 'long~69f1AAAAAAAA')
   assert.equal(rows.find((row) => row.worktreeId === 'bb222222').worktree, 'long~69f1BBBBBBBB')
 
+  const slash = findMatches(rows, [], 'jevpet/main')
+  assert.equal(slash.filter((match) => match.score === 400).length, 1)
+  assert.equal(slash.find((match) => match.score === 400).row.handle, 'term_a24f')
+  const linkRows = [{ repo: 'KnowsLink', worktree: 'coor', branch: '', title: '', handle: 'hk', worktreeId: 'wk', repoId: 'rk' }]
+  assert.equal(findMatches(linkRows, [], 'KnowsLink/coor')[0].score, 400)
+  assert.equal(findMatches(linkRows, [], 'knowslink/coor')[0].row.handle, 'hk')
+  assert.equal(pickTarget(linkRows, 'KnowsLink/coor').row.handle, 'hk')
+
   const named = findMatches(rows, [], 'same').find((match) => match.row.worktreeId === 'id-aaaabbbb')
   assert.equal(named.score, 400)
   assert.ok(findMatches(rows, [], 'jevpet').some((match) => match.row.worktree === 'jevpet~982c69f1'))
@@ -233,4 +245,75 @@ test('tailLines drops ANSI and trailing blank lines', () => {
   assert.deepEqual(tailLines(['keep', '\u001b[1;31mhi\u001b[0m', '', '  '], 2), ['keep', 'hi'])
   assert.deepEqual(tailLines(['\u001b[31mred\u001b[0m', ''], 40), ['red'])
   assert.deepEqual(tailLines(['a', 'b', 'c'], 1), ['c'])
+})
+
+test('plainLines drops TUI chrome and keeps the conversation', () => {
+  const rule = '─'.repeat(24)
+  const lines = [
+    '> ship the fix',
+    '● updated login',
+    '  still in the same message',
+    '',
+    '',
+    '      33 -|const old = 1',
+    '      33 +|const next = 2',
+    '  ⎿  Read ..\\scratchpad\\x.py (12 lines)',
+    '  ⎿  Allowed by auto mode',
+    '  ⎿  Successfully loaded skill',
+    '  Ran 3 shell commands',
+    '  Read 1 file, ran 5 shell commands',
+    '✻ Churned for 4m 48s · done 10:42 PM',
+    '※ recap: tightened the check',
+    '  (disable recaps in /config)',
+    `${' '.repeat(20)}✔ Update installed · Restart to update`,
+    `❯${rule}`,
+    '❯ fix',
+    rule,
+    '  ⏵⏵ auto mode on (shift+tab to cycle) · ctx 33%',
+    '  ⏵⏵ bypass permissions on · 1 shell, 1 monitor · ↓ to manage',
+  ]
+  assert.deepEqual(plainLines(lines), [
+    '> ship the fix',
+    '● updated login',
+    '  still in the same message',
+    '',
+    '      33 -|const old = 1',
+    '      33 +|const next = 2',
+  ])
+})
+
+test('plainLines keeps the main column and strips borders and ANSI', () => {
+  assert.deepEqual(
+    plainLines([
+      '\u001b[32m● hello\u001b[0m │ Workers │',
+      '│ keep me │ Reviews │',
+      '│ Flow │',
+      '╭────╮',
+      '│ inside │',
+      '╰────╯',
+    ]),
+    ['● hello', 'keep me', 'inside'],
+  )
+})
+
+test('resolveOrcaBin honors a stub on PATH', () => {
+  if (process.platform === 'win32') return
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orca-helm-'))
+  const name = process.platform === 'linux' ? 'orca-ide' : 'orca'
+  const stub = path.join(dir, name)
+  fs.writeFileSync(stub, '#!/bin/sh\nexit 0\n')
+  fs.chmodSync(stub, 0o755)
+  const prevPath = process.env.PATH
+  const prevBin = process.env.ORCA_HELM_BIN
+  delete process.env.ORCA_HELM_BIN
+  process.env.PATH = `${dir}${path.delimiter}${prevPath ?? ''}`
+  try {
+    assert.equal(resolveOrcaBin(), stub)
+  } finally {
+    if (prevPath === undefined) delete process.env.PATH
+    else process.env.PATH = prevPath
+    if (prevBin === undefined) delete process.env.ORCA_HELM_BIN
+    else process.env.ORCA_HELM_BIN = prevBin
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })

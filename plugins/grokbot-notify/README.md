@@ -10,10 +10,10 @@ Orca 에이전트 상태(`working` / `blocked` / `waiting` / `done`)가 바뀔 �
 
 ## 설치
 
-로컬 개발 폴더로 로드합니다. 첫 실행이 fingerprint를 출력하면 그 값으로 다시 승인합니다.
+매니페스트는 저장소 루트의 `orca-plugin.json` 입니다. 개발 폴더도 그 루트입니다. 첫 실행이 fingerprint를 출력하면 그 값으로 다시 승인합니다.
 
 ```sh
-orca plugin dev load <dir> --approve <fingerprint>
+orca plugin dev load . --approve <fingerprint>
 ```
 
 또는 폴더를 감시하면서 로드합니다.
@@ -22,7 +22,7 @@ orca plugin dev load <dir> --approve <fingerprint>
 orca plugin dev watch .
 ```
 
-또는 **Settings → Plugins → Development folders**에서 이 폴더를 추가합니다. 로드되면 `local.grokbot-notify`로 보입니다.
+또는 **Settings → Plugins → Development folders**에서 저장소 루트를 추가합니다. 로드되면 `local.grokbot-notify`로 보입니다. 태그 이후 Git 설치 URL은 `https://github.com/tourbut/orca-helm.git#v0.2.0` 입니다.
 
 ## 설정
 
@@ -91,11 +91,9 @@ node --test test/
 
 ## 공개 배포 방법
 
-나중에:
+매니페스트가 저장소 루트에 있으므로 디렉터리는 이 저장소 자체를 봅니다. 토픽과 태그는 여기서 붙이지 않습니다.
 
-이 플러그인은 이제 `orca-helm` 레포의 하위 폴더(`plugins/grokbot-notify`)에 있습니다. 로컬 설치는 이 폴더 경로를 가리키면 됩니다. 카탈로그에 올릴 때는 레포 루트가 아니므로 항목에 `source.path: "plugins/grokbot-notify"` 가 필요합니다.
-
-1. `orca plugin validate plugins/grokbot-notify`
+1. `orca plugin validate .`
 2. `orca-plugin.json`의 `version`을 올려 커밋·푸시하고, 그 커밋에 태그를 붙여 푸시합니다: `git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z`
 3. `gh repo edit tourbut/orca-helm --add-topic orca-plugin`
 

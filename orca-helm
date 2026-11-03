@@ -1,0 +1,13 @@
+#!/bin/sh
+# Resolve this file's directory even via a symlink. macOS readlink has no -f.
+src=$0
+while [ -L "$src" ]; do
+  dir=$(CDPATH= cd -P "$(dirname "$src")" && pwd) || exit 1
+  link=$(readlink "$src") || exit 1
+  case $link in
+    /*) src=$link ;;
+    *) src=$dir/$link ;;
+  esac
+done
+dir=$(CDPATH= cd -P "$(dirname "$src")" && pwd) || exit 1
+exec node "$dir/bin/orca-helm.mjs" "$@"

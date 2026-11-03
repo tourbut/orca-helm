@@ -1,6 +1,6 @@
 {
   "name": "orca-helm",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Bot-friendly CLI for a local Orca IDE",
   "type": "module",
   "bin": {
