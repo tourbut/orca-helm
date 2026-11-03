@@ -12,6 +12,8 @@ orca-helm 세트의 알림 쪽 절반입니다. Orca 자체 알림 훅(플러그
 | --- | --- |
 | `worker/main.mjs` | `activate(orca)`: 알림 훅 처리, 전송·재시도, `auth.set` / `auth.status` / `test.send` 핸들러 |
 | `worker/core.mjs` | 순수 함수: `parseRoutes`, `matchesWorkspace`, `repoNameFromGit`, `parseStates`, `createDebouncer`, `buildPayload` |
+| `panel/routes.tsx` | 오른쪽 사이드바 **Grok Bot** 패널(components): 봇 카드, 봇 추가·편집·삭제, 워크스페이스 체크박스. 워커에 `routes.list` / `routes.save` / `routes.delete` 만 요청 |
+| `panel/routes.test.tsx`, `panel/routes.check.ts` | `orca plugin test` 로 패널과 실제 워커를 함께 돌리는 테스트, `orca plugin check` 시나리오 |
 | `test/*.test.mjs` | 단위 테스트와 로컬 HTTP 스텁·모의 Orca로 워커를 돌리는 테스트 |
 
 ## 테스트
@@ -46,7 +48,8 @@ It can send each repo to a different Grok Bot (the `Routes` setting: one line pe
 
 - `worker/main.mjs`: `activate(orca)`; handles the alert hook, delivery and retry, and the `auth.set` / `auth.status` / `test.send` handlers.
 - `worker/core.mjs`: pure helpers `parseRoutes`, `matchesWorkspace`, `repoNameFromGit`, `parseStates`, `createDebouncer`, `buildPayload`.
-- Tests: `npm test` from the repo root; the worker test uses a local HTTP stub and a mock Orca.
+- `panel/routes.tsx`: the **Grok Bot** sidebar panel (components): bot cards, add/edit/delete, workspace checkboxes; it only calls the worker (`routes.list` / `routes.save` / `routes.delete`).
+- Tests: `npm test` from the repo root (the worker against a local HTTP stub and a mock Orca); `orca plugin test .` and `orca plugin check .` add the panel (`panel/routes.test.tsx`, `panel/routes.check.ts`).
 - Release: `orca plugin validate .`, bump `version` in `orca-plugin.json` and `package.json`, tag that commit `vX.Y.Z`, and add the `orca-plugin` topic.
 
 Status: checked against a local stub and a mock Orca only, not yet end to end in a real Orca.

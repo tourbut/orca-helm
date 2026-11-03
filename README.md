@@ -55,7 +55,16 @@ PATH에 넣으려면 Windows는 `C:\tools\orca-helm` 을 PATH에 추가하고, m
 
 ### 3. Grok Bot 루틴 연결
 
-봇마다 그 봇의 루틴 화면에서 **URL**과 **Authorization 값** 두 개를 복사해, Orca **Settings** 의 이 플러그인 `Routes` 칸에 한 줄로 붙여 넣습니다.
+Orca 오른쪽 사이드바의 **Grok Bot** 패널(로봇 아이콘)에서 봇을 추가합니다. 봇마다 그 봇의 루틴 화면에서 **URL**과 **Authorization 값** 두 개를 복사해 둡니다.
+
+1. **봇 추가** 를 누릅니다.
+2. **봇 이름**(예: 풀로), **Grok Bot routine URL**, **Authorization value** 칸을 채웁니다. Authorization 칸은 비밀번호 칸이라 글자가 가려지고, `Authorization:` 접두어가 있어도 됩니다.
+3. **워크스페이스** 에서 이 봇이 받을 레포나 워크스페이스를 체크합니다. 목록은 지금 Orca에 열린 워크스페이스의 레포 이름(레포가 아니면 워크스페이스 이름)입니다. 아무것도 체크하지 않으면 모든 워크스페이스를 받습니다.
+4. **저장** 을 누릅니다. 카드에 `Authorization 저장됨` 이 보이면 끝입니다. 값은 암호화된 플러그인 secrets에만 있고 패널에는 다시 나오지 않습니다.
+
+카드의 **편집** 으로 바꾸거나 **삭제**(한 번 더 눌러 확인)합니다. 편집할 때 Authorization 칸을 비워 두면 저장된 값을 그대로 씁니다. 봇 이름을 바꿔도 저장된 값은 따라갑니다. 실제 URL과 Authorization 값은 문서나 저장소에 남기지 마세요.
+
+패널은 Settings의 `Routes` 칸에 봇마다 한 줄을 써 넣습니다. 0.3.0에서 쓰던 줄은 그대로 패널에 카드로 나오고, 칸에 직접 한 줄씩 붙여 넣어도 됩니다.
 
 ```text
 봇이름 | 워크스페이스1,워크스페이스2 | 루틴 URL | Authorization 값
@@ -228,7 +237,7 @@ Orca **Settings** 에서 이 플러그인 아래에 보입니다.
 
 | 키 | 화면 이름 | 설명 |
 | --- | --- | --- |
-| `routes` | Routes (one Grok Bot per line) | 여러 줄. 한 줄에 봇 하나: `봇이름 \| 워크스페이스1,워크스페이스2 \| 루틴 URL \| Authorization 값`. 저장하면 끝 칸이 `(saved)` 로 바뀝니다. [설치 3단계](#3-grok-bot-루틴-연결) 참고 |
+| `routes` | Routes (one Grok Bot per line) | 보통은 **Grok Bot** 패널이 씁니다. 여러 줄, 한 줄에 봇 하나: `봇이름 \| 워크스페이스1,워크스페이스2 \| 루틴 URL \| Authorization 값`. 저장하면 끝 칸이 `(saved)` 로 바뀝니다. [설치 3단계](#3-grok-bot-루틴-연결) 참고 |
 | `webhookUrl` | Grok Bot routine URL | `routes` 가 비어 있을 때만: 모든 워크스페이스를 받을 루틴 URL 하나. `auth.set` 의 `url` 로도 넣습니다 |
 | `authValue` | Authorization value | `routes` 가 비어 있을 때만: 위 URL의 Authorization 값. 붙여 넣으면 워커가 바로 secrets로 옮기고 칸을 비웁니다 |
 | `states` | States | 넘길 상태, 쉼표로 구분. 기본 `done,waiting,blocked` |
@@ -236,10 +245,13 @@ Orca **Settings** 에서 이 플러그인 아래에 보입니다.
 
 ### 핸들러
 
-`orca plugin dev request <폴더|local.grokbot-notify> <이름>` 으로 부릅니다. 개발 폴더로 로드한 플러그인에서만 됩니다.
+Grok Bot 패널은 `plugin.request` 로 `routes.*` 를 부릅니다. 명령줄에서는 `orca plugin dev request <폴더|local.grokbot-notify> <이름>` 으로 부르며, 개발 폴더로 로드한 플러그인에서만 됩니다.
 
 | 이름 | 입력 | 결과 |
 | --- | --- | --- |
+| `routes.list` | 없음 | `{"routes":[{"name","url","workspaces","hasAuth"}],"workspaces":[체크박스 후보],"errors":[{"line","reason"}]}`. Authorization 값은 돌려주지 않습니다 |
+| `routes.save` | `{"previousName"?, "name", "url", "workspaces": [...], "auth"?}` | 새 `routes.list` 결과. `auth` 가 비면 저장된 값을 그대로 두고, 이름이 바뀌면 값도 옮깁니다. 틀린 값은 이유만 담은 오류 |
+| `routes.delete` | `{"name"}` | 새 `routes.list` 결과. 그 봇의 줄과 저장된 Authorization을 지웁니다 |
 | `auth.set` | `{"route": "<routes 한 줄>"}` 또는 `{"url"?: string, "value"?: string}` | `{"ok":true}`. `route` 는 `routes` 끝에 붙어 같은 이름의 예전 줄을 대신합니다. 틀린 줄이면 이유만 담은 오류 |
 | `auth.status` | 없음 | `{"hasAuth","hasUrl","protection","routes":[{"name","workspaces","hasAuth"}],"errors":[{"line","reason"}]}`. 값 자체는 돌려주지 않습니다 |
 | `test.send` | 없음 | 모든 봇에 테스트 `done` 알림 한 번씩(워크스페이스·중복 억제 무시). `{"status","routes":[{"route","status"}]}` |
@@ -254,11 +266,11 @@ Orca **Settings** 에서 이 플러그인 아래에 보입니다.
 | capability | 쓰는 곳 |
 | --- | --- |
 | `agent:read` | `agent.status.changed` 알림 훅 받기 |
-| `workspace:read` | `workspace.list` 로 worktree 이름·브랜치·경로 찾기 |
+| `workspace:read` | `workspace.list` 로 worktree 이름·브랜치·경로 찾기, 패널의 워크스페이스 체크박스 목록 |
 | `settings:own` | 자기 설정 읽기, `auth.set` 저장, Authorization 값을 `(saved)` 로 바꾸거나 칸 비우기 |
 | `secrets:own` | Authorization 값 저장·읽기 |
 
-터미널 읽기·입력, 에이전트 실행 권한은 요청하지 않습니다. 플러그인은 Grok Bot에 알림만 보내고, Orca를 조작하는 일은 CLI가 합니다.
+터미널 읽기·입력, 에이전트 실행 권한은 요청하지 않습니다. 플러그인은 Grok Bot에 알림만 보내고, Orca를 조작하는 일은 CLI가 합니다. Grok Bot 패널(`plugins/grokbot-notify/panel/routes.tsx`, components 패널)은 따로 권한을 쓰지 않고 워커에만 요청합니다.
 
 ### 개발과 배포
 
@@ -266,10 +278,12 @@ Orca **Settings** 에서 이 플러그인 아래에 보입니다.
 orca plugin validate .
 orca plugin dev emit . agent.status.changed --data '{"workspaceId":null,"paneKey":"p1","terminalId":"t1","title":"demo","state":"done","receivedAt":1730000000000,"mainAgent":{"state":"done","outcome":"success","stateStartedAt":1730000000000}}'
 npm test
+orca plugin test .
+orca plugin check .
 ```
 
-`npm test` 는 CLI와 플러그인 테스트를 모두 돌립니다. 플러그인 테스트는 로컬 HTTP 스텁만 씁니다.
+`npm test` 는 CLI와 플러그인 워커 테스트를 돌립니다(로컬 HTTP 스텁만 씀). `orca plugin test .` 는 Orca 런타임으로 패널과 실제 워커를 함께 돌리는 `panel/routes.test.tsx` 까지 돌리고, `orca plugin check .` 는 `panel/routes.check.ts` 의 시나리오대로 패널을 그려 봅니다. Orca 1.4.247(Windows)은 저장소가 Orca 설치 드라이브(C:)와 다른 드라이브에 있으면 이 두 명령이 `cannot import "./orca-runtime.mjs"` 로 실패합니다. 공식 템플릿도 같으므로, C: 드라이브에 복사해서 돌리세요.
 
-태그가 있으면 Settings → Plugins → Install plugin에 `https://github.com/tourbut/orca-helm.git#v0.3.0` 같은 Git URL로도 설치할 수 있습니다. 이렇게 설치하면 `orca plugin dev request` 가 닿지 않으므로 `Routes` 칸에 직접 붙여 넣습니다. 디렉터리(onorca.dev/plugins)는 공개 저장소 루트의 `orca-plugin.json`, 토픽 `orca-plugin`, 최신 `vX.Y.Z` 태그를 봅니다. 배포 절차는 [plugins/grokbot-notify/README.md](plugins/grokbot-notify/README.md) 에 있습니다.
+태그가 있으면 Settings → Plugins → Install plugin에 `https://github.com/tourbut/orca-helm.git#v0.4.0` 같은 Git URL로도 설치할 수 있습니다. 이렇게 설치해도 Grok Bot 패널로 봇을 관리할 수 있습니다(`orca plugin dev request` 만 닿지 않습니다). 디렉터리(onorca.dev/plugins)는 공개 저장소 루트의 `orca-plugin.json`, 토픽 `orca-plugin`, 최신 `vX.Y.Z` 태그를 봅니다. 배포 절차는 [plugins/grokbot-notify/README.md](plugins/grokbot-notify/README.md) 에 있습니다.
 
-상태: 플러그인은 로컬 스텁과 모의 Orca로만 검증했고, 실제 Orca에 로드해 Grok Bot까지 보낸 확인은 아직 없습니다.
+상태: 워커는 로컬 HTTP 스텁과 모의 Orca로, Grok Bot 패널은 Orca 테스트 키트(대체 호스트)로 검증했습니다. 실제 Orca에 로드해 패널을 띄우고 Grok Bot까지 보낸 확인은 아직 없습니다.

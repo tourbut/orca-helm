@@ -55,7 +55,16 @@ Once loaded, the plugin key is `local.grokbot-notify`. It asks only for the four
 
 ### 3. Connect the Grok Bot routine
 
-For each bot, copy the two values from that bot's routine screen, the **URL** and the **Authorization value**, and paste them as one line into the plugin's `Routes` box in Orca **Settings**.
+Add the bots in the **Grok Bot** panel (robot icon) in Orca's right sidebar. For each bot, copy two values from its routine screen first: the **URL** and the **Authorization value**.
+
+1. Press **Add bot**.
+2. Fill in **Bot name** (such as 풀로), **Grok Bot routine URL** and **Authorization value**. The Authorization field is a password field, so the text stays hidden; an `Authorization:` prefix is fine.
+3. Under **Workspaces**, tick the repos or workspaces this bot should get. The list holds the repo name of every workspace Orca has open (a workspace's own name when it is not a repo). Tick none to get every workspace.
+4. Press **Save**. The card shows `Authorization saved` when it is done. The value lives only in Orca's encrypted plugin secrets and never comes back to the panel.
+
+Use **Edit** on a card to change it, or **Delete** (press it twice to confirm). While editing, leave the Authorization field empty to keep the saved value; renaming the bot keeps it too. Never write the real URLs or Authorization values into docs or the repo.
+
+The panel writes one line per bot into the `Routes` box in Settings. Lines from 0.3.0 show up as cards as they are, and you can still paste lines into the box yourself:
 
 ```text
 bot name | workspace1,workspace2 | routine URL | Authorization value
@@ -228,7 +237,7 @@ They appear under the plugin in Orca **Settings**.
 
 | Key | Shown as | Meaning |
 | --- | --- | --- |
-| `routes` | Routes (one Grok Bot per line) | Multiline. One bot per line: `bot name \| workspace1,workspace2 \| routine URL \| Authorization value`. After saving, the last field reads `(saved)`. See [Install step 3](#3-connect-the-grok-bot-routine) |
+| `routes` | Routes (one Grok Bot per line) | Usually written by the **Grok Bot** panel. Multiline, one bot per line: `bot name \| workspace1,workspace2 \| routine URL \| Authorization value`. After saving, the last field reads `(saved)`. See [Install step 3](#3-connect-the-grok-bot-routine) |
 | `webhookUrl` | Grok Bot routine URL | Only while `routes` is empty: one routine URL for every workspace. `auth.set`'s `url` also sets it |
 | `authValue` | Authorization value | Only while `routes` is empty: the Authorization value for that URL. Paste once; the worker moves it into secrets right away and clears the field |
 | `states` | States | States to hand over, comma-separated. Default `done,waiting,blocked` |
@@ -236,10 +245,13 @@ They appear under the plugin in Orca **Settings**.
 
 ### Handlers
 
-Call them with `orca plugin dev request <folder|local.grokbot-notify> <name>`. This reaches plugins loaded from a development folder only.
+The Grok Bot panel calls `routes.*` through `plugin.request`. From the command line, call any of them with `orca plugin dev request <folder|local.grokbot-notify> <name>`, which reaches plugins loaded from a development folder only.
 
 | Name | Input | Result |
 | --- | --- | --- |
+| `routes.list` | none | `{"routes":[{"name","url","workspaces","hasAuth"}],"workspaces":[checkbox choices],"errors":[{"line","reason"}]}`. Never an Authorization value |
+| `routes.save` | `{"previousName"?, "name", "url", "workspaces": [...], "auth"?}` | The new `routes.list` answer. An empty `auth` keeps the saved value, and a rename moves it. A bad value fails with the reason only |
+| `routes.delete` | `{"name"}` | The new `routes.list` answer. Removes that bot's line and its saved Authorization |
 | `auth.set` | `{"route": "<one routes line>"}` or `{"url"?: string, "value"?: string}` | `{"ok":true}`. A `route` line is appended to `routes` and replaces an earlier line for the same name. A malformed line fails with the reason only |
 | `auth.status` | none | `{"hasAuth","hasUrl","protection","routes":[{"name","workspaces","hasAuth"}],"errors":[{"line","reason"}]}`. Never the values themselves |
 | `test.send` | none | One test `done` alert to every bot, skipping the workspace match and the repeat check. `{"status","routes":[{"route","status"}]}` |
@@ -254,11 +266,11 @@ Call them with `orca plugin dev request <folder|local.grokbot-notify> <name>`. T
 | Capability | Used for |
 | --- | --- |
 | `agent:read` | Receiving the `agent.status.changed` alert hook |
-| `workspace:read` | Looking up the worktree name, branch and path with `workspace.list` |
+| `workspace:read` | Looking up the worktree name, branch and path with `workspace.list`; the panel's workspace checkboxes |
 | `settings:own` | Reading its settings, saving `auth.set`, turning Authorization values into `(saved)` or clearing the field |
 | `secrets:own` | Storing and reading the Authorization value |
 
-It asks for no terminal read or input and no agent launch. The plugin only alerts Grok Bot; the CLI does everything that changes Orca.
+It asks for no terminal read or input and no agent launch. The plugin only alerts Grok Bot; the CLI does everything that changes Orca. The Grok Bot panel (`plugins/grokbot-notify/panel/routes.tsx`, a components panel) uses no capability of its own: it only asks the worker.
 
 ### Development and release
 
@@ -266,10 +278,12 @@ It asks for no terminal read or input and no agent launch. The plugin only alert
 orca plugin validate .
 orca plugin dev emit . agent.status.changed --data '{"workspaceId":null,"paneKey":"p1","terminalId":"t1","title":"demo","state":"done","receivedAt":1730000000000,"mainAgent":{"state":"done","outcome":"success","stateStartedAt":1730000000000}}'
 npm test
+orca plugin test .
+orca plugin check .
 ```
 
-`npm test` runs the CLI and plugin tests. The plugin tests use a local HTTP stub only.
+`npm test` runs the CLI and plugin worker tests (a local HTTP stub only). `orca plugin test .` also runs `panel/routes.test.tsx`, which drives the panel and the real worker together on Orca's runtime, and `orca plugin check .` draws the panel for each scenario in `panel/routes.check.ts`. On Windows, Orca 1.4.247 fails both with `cannot import "./orca-runtime.mjs"` when the repo is on a different drive than Orca's install (C:); the official template does the same, so run them from a copy on C:.
 
-Once a tag exists, you can also install from a Git URL such as `https://github.com/tourbut/orca-helm.git#v0.3.0` in Settings → Plugins → Install plugin. `orca plugin dev request` does not reach a plugin installed that way, so paste the lines into the `Routes` box. The directory (onorca.dev/plugins) reads `orca-plugin.json` at the root of a public repo, the `orca-plugin` topic, and the latest `vX.Y.Z` tag. The release steps are in [plugins/grokbot-notify/README.md](plugins/grokbot-notify/README.md).
+Once a tag exists, you can also install from a Git URL such as `https://github.com/tourbut/orca-helm.git#v0.4.0` in Settings → Plugins → Install plugin. The Grok Bot panel works for a plugin installed that way too; only `orca plugin dev request` does not reach it. The directory (onorca.dev/plugins) reads `orca-plugin.json` at the root of a public repo, the `orca-plugin` topic, and the latest `vX.Y.Z` tag. The release steps are in [plugins/grokbot-notify/README.md](plugins/grokbot-notify/README.md).
 
-Status: the plugin has been checked against a local stub and a mock Orca only. It has not yet been loaded into a real Orca and delivered to Grok Bot end to end.
+Status: the worker has been checked against a local HTTP stub and a mock Orca, and the Grok Bot panel with Orca's test kit (a stand-in host). It has not yet been loaded into a real Orca, with the panel opened and alerts delivered to Grok Bot end to end.
