@@ -55,23 +55,40 @@ Once loaded, the plugin key is `local.grokbot-notify`. It asks only for the four
 
 ### 3. Connect the Grok Bot routine
 
-Copy the **routine URL** and the **Authorization value** from the Grok Bot routine screen and set them with `auth.set`. Never write the real values into docs or the repo.
+For each bot, copy the two values from that bot's routine screen, the **URL** and the **Authorization value**, and paste them as one line into the plugin's `Routes` box in Orca **Settings**.
 
-```sh
-orca plugin dev request . auth.set --data '{"url":"<routine URL>","value":"<Authorization value>"}'
+```text
+bot name | workspace1,workspace2 | routine URL | Authorization value
 ```
 
-- `.` is the clone. Elsewhere, pass the folder path or `local.grokbot-notify`.
-- `value` may keep its `Authorization:` prefix. The worker strips it and stores the value in Orca's encrypted plugin secrets.
-- Windows PowerShell 5.1 breaks the quotes inside the JSON. Escape them as `'{\"url\":\"...\",\"value\":\"...\"}'`, or run the command from PowerShell 7.3+ or Git Bash.
-- Instead of the command line, you can paste both into the plugin's `Grok Bot routine URL` and `Authorization value` fields in Orca **Settings**. The worker moves the Authorization value into secrets right away and clears the field.
+Example, a different bot per repo (placeholders, not real values):
+
+```text
+# bot name | workspaces | routine URL | Authorization
+풀로 | Fullops-Squad-plugin,orca-helm | <풀로 routine URL> | <풀로 Authorization value>
+노리 | jevpet | <노리 routine URL> | <노리 Authorization value>
+링크 | KnowsLink | <링크 routine URL> | <링크 Authorization value>
+```
+
+- On save the worker moves each line's Authorization value into Orca's encrypted plugin secrets and rewrites the line as `풀로 | Fullops-Squad-plugin,orca-helm | <URL> | (saved)`, so you never paste it again.
+- An `Authorization:` prefix is fine. A new line with the same bot name replaces the old one, value included.
+- Blank lines and `#` comments are allowed. A malformed line is skipped and logged with its line number and the reason only.
+- Never write the real URLs or Authorization values into docs or the repo.
+
+You can also add one line from the command line when the plugin is loaded from a development folder. `.` is the clone; elsewhere pass the folder path or `local.grokbot-notify`. Windows PowerShell 5.1 breaks the quotes inside the JSON, so escape them as `\"` or run it from PowerShell 7.3+ or Git Bash.
+
+```sh
+orca plugin dev request . auth.set --data '{"route":"풀로 | Fullops-Squad-plugin,orca-helm | <routine URL> | <Authorization value>"}'
+```
+
+With a single bot you can still fill only the `Grok Bot routine URL` and `Authorization value` fields (or `auth.set` with `{"url","value"}`). Once `Routes` has a valid line, those two fields are not used.
 
 Check:
 
 ```sh
-orca plugin dev request . auth.status   # {"hasAuth":true,"hasUrl":true,...} means ready
-orca plugin dev request . test.send     # sends one test alert (done) to the Grok Bot routine
-orca plugin logs local.grokbot-notify   # worker log, including failed deliveries
+orca plugin dev request . auth.status   # hasAuth per route; malformed lines under errors
+orca plugin dev request . test.send     # one test alert (done) to every bot's routine
+orca plugin logs local.grokbot-notify   # worker log: failed deliveries, skipped lines
 ```
 
 ## How Grok Bot uses it
@@ -103,7 +120,7 @@ Output is short text by default; `--json` prints one line of JSON.
 | --- | --- |
 | `status [query] [--all]` | One line per terminal, ordered waiting, working, done, shell, idle, unknown. Archived worktrees are left out unless `--all`. `--json` prints `{"rows":[...]}` |
 | `find <query>` | Top 10, archived included. Also matches repo names and paths from `repo list`. Each line ends with `worktreeId`, `repoId`, `handle`. `--json` prints `{"matches":[...]}`, each with a `score` |
-| `read <target> [--lines 40] [--screen] [--plain]` | The last N lines. `--lines 0` prints none. `--screen` passes `orca terminal read --screen`. `--plain` (alias `--strip-tui`) drops TUI boxes, the input box, footers and tool lines before counting N. `--json` prints `{"handle","status","lines","truncated"}`, plus `"plain":true` with `--plain` |
+| `read <target> [--lines 40] [--screen] [--plain]` | The last N lines. `--lines 0` prints none. `--screen` passes `orca terminal read --screen`. `--plain` (alias `--strip-tui`) drops TUI borders, the input box, footers, side panels and tool lines before counting N. Content lines stay: a line with only a bracket, tables, code, diffs. `--json` prints `{"handle","status","lines","truncated"}`, plus `"plain":true` with `--plain` |
 | `send <target> (--file \| --text) [--no-enter] [--interrupt]` | Sends the text and presses Enter unless `--no-enter`. Trailing blank lines of `--file` are dropped so Enter is not pressed twice. `--interrupt` is passed as `orca terminal send --interrupt`. Prints `sent <repo>/<worktree> t:<handle>` |
 | `start <repo> --name <name> [--agent claude\|codex] (--file \| --text)` | Picks one repo from `repo list` and runs `orca worktree create --prompt`. Prints `created <name> id:<worktreeId> repo:<repoId>`, then `t:<handle>` |
 | `wait <target> [--timeout 600] [--interval 5] [--for agent\|tui-idle\|exit] [--fresh 60]` | See [wait](#wait). Seconds |
@@ -113,6 +130,8 @@ Output is short text by default; `--json` prints one line of JSON.
 `--out <file>` works with every command, `raw` included. It writes stdout to the file as UTF-8 without a BOM and prints nothing on stdout. stderr gets one `wrote <file>` line, and the exit code is unchanged. It combines with `--json`.
 
 Flags that take a value accept both `--name value` and `--name=value`. A value may start with `-` (`--text "- item"`). Only a token that starts with `--` begins the next flag.
+
+Every command but `raw` takes one positional argument at most (the target or query). Quote a query that has spaces. An extra argument is an error: the command does not run, and it exits 1 with that command's usage line on stderr (`orca-helm: unexpected argument "main" ...`).
 
 ### Finding a target
 
@@ -129,6 +148,7 @@ The state column is `working` / `waiting` / `done` / `shell` / `idle` / `unknown
 
 ### wait
 
+- The target is resolved to a terminal handle once, at the start, and only that handle is polled after that. A worktree with a similar name showing up mid-wait does not change the target. A target without a terminal is an error at once; if the terminal disappears mid-wait, it exits 1 with `terminal t:<handle> (<repo>/<worktree>) is gone`.
 - `--for agent` (default): re-reads every `--interval` seconds (0 means 0.25 s). It ends once the agent turns waiting/done/idle/shell after being seen working. It also ends at once on a waiting/done that changed within the last `--fresh` seconds; an older done belongs to the previous turn and is ignored. `shell` and `idle` never end it on freshness alone. Output is a `status` line; `--json` prints `{"row":{...},"timedOut":false}`.
 - `--for tui-idle` / `--for exit`: handed to `orca terminal wait`. Output is `satisfied|timeout <repo>/<worktree> t:<handle> <mode>`; `--json` prints Orca's wait result.
 - A timeout exits 2.
@@ -144,7 +164,7 @@ The state column is `working` / `waiting` / `done` / `shell` / `idle` / `unknown
 
 ## Platform notes
 
-**Windows.** `orca-helm.ps1` is the main entry point. It reads node's stdout as UTF-8 strings; when its own output is redirected, it writes them back in the original `[Console]::OutputEncoding` (CP949 on Korean Windows). So an outer PowerShell 5.1 that captures `$o = powershell -File .\orca-helm.ps1 status`, or pipes it on, keeps Hangul intact. Caveat: **inside** a PowerShell whose own stdout is redirected (a remote shell, for example), `$o = .\orca-helm.ps1 ...` or `.\orca-helm.ps1 ... | ConvertFrom-Json` gets nothing; the output goes straight to stdout instead. In that case start a new process, as in `$o = powershell -NoProfile -File C:\tools\orca-helm\orca-helm.ps1 status --json`, or write with `--out <file>` and read it back with `Get-Content -Encoding UTF8 <file>`. Running the command as is and reading its stdout is not affected. Set `ORCA_HELM_ENCODING=utf8` to keep UTF-8 bytes instead. stderr comes straight from node, and `wait` output appears all at once at the end. PowerShell swallows `--`, so `raw` works without it. `orca-helm.cmd` switches to `chcp 65001`, restores the previous code page, and keeps the exit code. Running `node bin\orca-helm.mjs` directly also works.
+**Windows.** `orca-helm.ps1` is the main entry point. node writes stdout to a temp file as UTF-8, and the script reads it back and emits each line into the PowerShell pipeline. So `$o = .\orca-helm.ps1 status --json` and `.\orca-helm.ps1 status --json | ConvertFrom-Json` work with Hangul intact even inside a PowerShell whose stdout is redirected, such as a remote shell. An outer PowerShell that starts it as a new process, as in `$o = powershell -File .\orca-helm.ps1 status`, gets the console's code page (CP949 on Korean Windows). Set `ORCA_HELM_ENCODING=utf8` to get UTF-8 bytes instead; the console code page is restored afterwards. stderr comes straight from node, and `wait` output appears all at once at the end. PowerShell swallows `--`, so `raw` works without it. `orca-helm.cmd` switches to `chcp 65001`, restores the previous code page, and keeps the exit code. Running `node bin\orca-helm.mjs` directly also works.
 
 On Windows orca-helm runs the `orca.exe` next to `orca.cmd` rather than the cmd.exe wrapper, which mangles quotes. Point `ORCA_HELM_BIN` at `orca.exe` too: current Node refuses to run a `.cmd` without a shell and ends with `cannot execute ...: EINVAL`.
 
@@ -166,18 +186,20 @@ It receives Orca's plugin alert hook `agent.status.changed` and POSTs JSON to th
 
 ### Behavior
 
+- **Routing per bot:** an alert goes once to every `Routes` line whose workspaces match. An entry matches when it equals the repo name or the Orca workspace name (case-insensitive), or appears in the worktree path. A line with an empty workspaces field matches every workspace. When no line matches, nothing happens: no network call and no repeat bookkeeping.
+- With no valid `Routes` line, the single `webhookUrl` gets every workspace, as before.
 - By default it hands over `done`, `waiting` and `blocked` only, never `working` (change this with the `states` setting).
-- The same state for the same terminal is not sent again within `debounceSeconds` (30 by default). If another state, such as `working`, came in between, it counts as a new turn and is sent.
-- A failed connection, 429 or 5xx is retried once after 2 seconds. A 10-second timeout is not retried, because Grok Bot may already have the first one. Failures show in `orca plugin logs local.grokbot-notify`.
-- The worktree name and branch come from `workspace.list`; they are `null` when not found.
-- The agent's last reply is not included: Orca's alert hook does not carry it. Read it with `orca-helm read <worktree> --plain`.
+- Per bot, the same state for the same terminal is not sent again within `debounceSeconds` (30 by default). If another state, such as `working`, came in between, it counts as a new turn and is sent.
+- Per bot, a failed connection, 429 or 5xx is retried once after 2 seconds. A 10-second timeout is not retried, because Grok Bot may already have the first one. Failures show with the bot's name in `orca plugin logs local.grokbot-notify`.
+- The worktree name and branch come from `workspace.list`, and the repo name from the worktree's `.git` (the main worktree's folder name, or the main repo folder that a linked worktree's `gitdir:` points to). Each is `null` when not found.
+- The agent's last reply is not included: Orca's alert hook does not carry it. Read it with `orca-helm read <repo>/<worktree> --plain`.
 
 ### The JSON it sends
 
 ```json
 {
   "event": "agent.status.changed",
-  "text": "fix-login: done (success) - Fix login redirect",
+  "text": "orca-helm/fix-login: done (success) - Fix login redirect",
   "state": "done",
   "outcome": "success",
   "title": "Fix login redirect",
@@ -186,16 +208,18 @@ It receives Orca's plugin alert hook `agent.status.changed` and POSTs JSON to th
   "workspaceId": "<repoId>::<worktree path>",
   "worktree": "fix-login",
   "branch": "fix-login",
-  "repo": null,
+  "repo": "orca-helm",
+  "route": "풀로",
   "receivedAt": "2026-11-03T12:00:00.000Z",
   "host": "my-pc"
 }
 ```
 
-- `text`: one line the routine can relay as is: `<worktree>: <state> (<outcome>) - <title>`, with `Orca` when the worktree is unknown.
+- `text`: one line the routine can relay as is: `<repo>/<worktree>: <state> (<outcome>) - <title>`. `<repo>/<worktree>` is the label `orca-helm status` prints, so it works as a target as is. `Orca` when both are unknown.
 - `state`: Orca's state (`done` / `waiting` / `blocked` / `working`). `outcome`: `success`, `failure` or `null`.
 - `title`: the terminal title. `terminalId` is the same handle orca-helm uses, so `orca-helm read t:<terminalId>` reads that terminal directly.
-- `worktree`, `branch`: the worktree's name and branch, or `null`. `repo` is always `null`; Orca does not provide it.
+- `worktree`, `branch`, `repo`: the worktree's name, its branch and the repo folder name, or `null`.
+- `route`: the bot this alert went to (the first field of its `Routes` line); `null` when sent through the single `webhookUrl`.
 - `receivedAt`: when Orca received the state (ISO 8601). `host`: the PC's host name.
 
 ### Settings
@@ -204,10 +228,11 @@ They appear under the plugin in Orca **Settings**.
 
 | Key | Shown as | Meaning |
 | --- | --- | --- |
-| `webhookUrl` | Grok Bot routine URL | The URL from the Grok Bot routine screen. `auth.set`'s `url` also sets it |
+| `routes` | Routes (one Grok Bot per line) | Multiline. One bot per line: `bot name \| workspace1,workspace2 \| routine URL \| Authorization value`. After saving, the last field reads `(saved)`. See [Install step 3](#3-connect-the-grok-bot-routine) |
+| `webhookUrl` | Grok Bot routine URL | Only while `routes` is empty: one routine URL for every workspace. `auth.set`'s `url` also sets it |
+| `authValue` | Authorization value | Only while `routes` is empty: the Authorization value for that URL. Paste once; the worker moves it into secrets right away and clears the field |
 | `states` | States | States to hand over, comma-separated. Default `done,waiting,blocked` |
 | `debounceSeconds` | Debounce seconds | Seconds before the same state is sent again. Default `30` |
-| `authValue` | Authorization value | Paste once; the worker moves it into secrets right away and clears the field |
 
 ### Handlers
 
@@ -215,22 +240,22 @@ Call them with `orca plugin dev request <folder|local.grokbot-notify> <name>`. T
 
 | Name | Input | Result |
 | --- | --- | --- |
-| `auth.set` | `{"url"?: string, "value"?: string}` (at least one) | `{"ok":true}`. `url` must be http(s) |
-| `auth.status` | none | `{"hasAuth","hasUrl","protection"}`. Never the values themselves |
-| `test.send` | none | Sends one test `done` alert, skipping the repeat check. `{"status":<HTTP status or null>}` |
+| `auth.set` | `{"route": "<one routes line>"}` or `{"url"?: string, "value"?: string}` | `{"ok":true}`. A `route` line is appended to `routes` and replaces an earlier line for the same name. A malformed line fails with the reason only |
+| `auth.status` | none | `{"hasAuth","hasUrl","protection","routes":[{"name","workspaces","hasAuth"}],"errors":[{"line","reason"}]}`. Never the values themselves |
+| `test.send` | none | One test `done` alert to every bot, skipping the workspace match and the repeat check. `{"status","routes":[{"route","status"}]}` |
 
 ### Secrets
 
-- The Authorization value lives only in Orca's encrypted plugin secrets. When `protection` is `unavailable` (no OS key store, or Linux `basic_text`), storing it fails.
-- The worker never writes the Authorization value or the routine URL to its log or error messages, because the URL may carry a token.
+- Authorization values live only in Orca's encrypted plugin secrets, one per bot, keyed by the bot name. When `protection` is `unavailable` (no OS key store, or Linux `basic_text`), storing fails, and that line keeps its value and is sent with it.
+- The worker never writes an Authorization value or a routine URL to its log or error messages, because the URL may carry a token. A malformed `routes` line is logged by line number and reason only.
 
 ### Capabilities
 
 | Capability | Used for |
 | --- | --- |
 | `agent:read` | Receiving the `agent.status.changed` alert hook |
-| `workspace:read` | Looking up the worktree name and branch with `workspace.list` |
-| `settings:own` | Reading its settings, saving `auth.set`'s URL, clearing the Authorization field |
+| `workspace:read` | Looking up the worktree name, branch and path with `workspace.list` |
+| `settings:own` | Reading its settings, saving `auth.set`, turning Authorization values into `(saved)` or clearing the field |
 | `secrets:own` | Storing and reading the Authorization value |
 
 It asks for no terminal read or input and no agent launch. The plugin only alerts Grok Bot; the CLI does everything that changes Orca.
@@ -245,6 +270,6 @@ npm test
 
 `npm test` runs the CLI and plugin tests. The plugin tests use a local HTTP stub only.
 
-Once a tag exists, you can also install from a Git URL such as `https://github.com/tourbut/orca-helm.git#v0.2.0` in Settings → Plugins → Install plugin. `orca plugin dev request` does not reach a plugin installed that way, so put the URL and Authorization value in the Settings fields. The directory (onorca.dev/plugins) reads `orca-plugin.json` at the root of a public repo, the `orca-plugin` topic, and the latest `vX.Y.Z` tag. The release steps are in [plugins/grokbot-notify/README.md](plugins/grokbot-notify/README.md).
+Once a tag exists, you can also install from a Git URL such as `https://github.com/tourbut/orca-helm.git#v0.3.0` in Settings → Plugins → Install plugin. `orca plugin dev request` does not reach a plugin installed that way, so paste the lines into the `Routes` box. The directory (onorca.dev/plugins) reads `orca-plugin.json` at the root of a public repo, the `orca-plugin` topic, and the latest `vX.Y.Z` tag. The release steps are in [plugins/grokbot-notify/README.md](plugins/grokbot-notify/README.md).
 
 Status: the plugin has been checked against a local stub and a mock Orca only. It has not yet been loaded into a real Orca and delivered to Grok Bot end to end.

@@ -3,7 +3,7 @@
   "execution": "trusted-worker",
   "id": "grokbot-notify",
   "name": "Grok Bot Notify",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Hands Orca's agent alerts (done, waiting, blocked) from Orca's agent.status.changed hook to Grok Bot. The alert half of orca-helm.",
   "license": "MIT",
   "repository": "https://github.com/tourbut/orca-helm",
