@@ -1,8 +1,10 @@
 import os from 'node:os'
+import { setTimeout as delay } from 'node:timers/promises'
 import { parseStates, createDebouncer, buildPayload } from './core.mjs'
 
 const SECRET_KEY = 'authValue'
 const FETCH_MS = 10_000
+const RETRY_MS = 2_000
 
 function stripAuthPrefix(value) {
   return String(value).replace(/^\s*authorization:\s*/i, '').trim()
@@ -22,6 +24,7 @@ function errText(err) {
 }
 
 // Secrets and settings writes go through the documented host methods (Host API 1.0).
+// Never log or throw the auth value or the webhook URL: either can carry the routine's token.
 async function setAuthSecret(orca, value) {
   const cleaned = stripAuthPrefix(value)
   if (!cleaned) throw new Error('empty auth value')
@@ -37,39 +40,55 @@ async function clearAuthSetting(orca) {
   await orca.host.call('settings.set', { key: 'authValue', value: '' })
 }
 
+/** Move a pasted `authValue` setting into secrets and blank the field. */
 async function migrateAuth(orca) {
-  const raw = await orca.settings.get('authValue')
-  if (raw == null || String(raw).trim() === '') return
-  await setAuthSecret(orca, String(raw))
-  await clearAuthSetting(orca)
-}
-
-async function readWorktree(orca, event) {
   try {
-    if (!orca.host?.has?.('workspace.readContext')) return { worktree: null, repo: null }
-    const ctx = await orca.host.call('workspace.readContext', {})
-    if (!ctx || !event.terminalId) return { worktree: null, repo: null }
-    const found = (ctx.terminals ?? []).some((t) => t.id === event.terminalId)
-    if (!found) return { worktree: null, repo: null }
-    return { worktree: ctx.displayName ?? null, repo: null }
-  } catch {
-    return { worktree: null, repo: null }
+    const raw = await orca.settings.get('authValue')
+    if (raw == null || String(raw).trim() === '') return
+    await setAuthSecret(orca, String(raw))
+    await clearAuthSetting(orca)
+  } catch (err) {
+    orca.log(`could not move authValue into secrets: ${errText(err)}`)
   }
 }
 
-async function postWebhook(orca, url, payload, auth) {
+/** Name and branch of the event's worktree from every workspace, not only the focused one. */
+async function lookupWorkspace(orca, workspaceId) {
+  try {
+    if (!workspaceId || !orca.host?.has?.('workspace.list')) return null
+    const { workspaces } = await orca.host.call('workspace.list', {})
+    return (workspaces ?? []).find((ws) => ws.id === workspaceId) ?? null
+  } catch {
+    return null
+  }
+}
+
+async function post(url, body, auth) {
   const headers = { 'Content-Type': 'application/json' }
   if (auth) headers.Authorization = auth
-  const res = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(FETCH_MS),
-  })
-  if (res.status < 200 || res.status >= 300) {
-    orca.log(`webhook responded ${res.status}`)
-  }
+  const res = await fetch(url, { method: 'POST', headers, body, signal: AbortSignal.timeout(FETCH_MS) })
   return res.status
+}
+
+// A timeout is not retried: the first POST may already have reached Grok Bot.
+function shouldRetry(result) {
+  if (result instanceof Error) return result.name !== 'TimeoutError'
+  return result === 429 || result >= 500
+}
+
+/** POST once, and once more after RETRY_MS for a failed connection, 429 or 5xx. */
+async function deliver(orca, url, payload, auth) {
+  const body = JSON.stringify(payload)
+  const attempt = () => post(url, body, auth).catch((err) => (err instanceof Error ? err : new Error(String(err))))
+  let result = await attempt()
+  if (shouldRetry(result)) {
+    orca.log(`webhook ${result instanceof Error ? `failed: ${errText(result)}` : `responded ${result}`}; retrying once`)
+    await delay(RETRY_MS)
+    result = await attempt()
+  }
+  if (result instanceof Error) throw result
+  if (result < 200 || result >= 300) orca.log(`webhook responded ${result}`)
+  return result
 }
 
 /** @param {import('orca/worker').OrcaWorkerApi} orca */
@@ -77,29 +96,18 @@ export default async function activate(orca) {
   const shouldSend = createDebouncer()
   let warnedNoUrl = false
 
-  try {
-    await migrateAuth(orca)
-  } catch (err) {
-    orca.log(`could not move authValue into secrets: ${errText(err)}`)
-  }
+  await migrateAuth(orca)
 
   async function forward(event, { debounce = true } = {}) {
     try {
-      try {
-        await migrateAuth(orca)
-      } catch (err) {
-        orca.log(`could not move authValue into secrets: ${errText(err)}`)
-      }
+      await migrateAuth(orca)
 
-      const allowed = parseStates(await orca.settings.get('states'))
-      if (!allowed.has(event.state)) return { status: null }
-
-      const key = event.terminalId ?? event.paneKey
-      const seconds = Number(await orca.settings.get('debounceSeconds') ?? 30)
+      const seconds = Number((await orca.settings.get('debounceSeconds')) ?? 30)
       const windowMs = Math.max(0, Number.isFinite(seconds) ? seconds : 30) * 1000
-      if (debounce && !shouldSend(key, event.state, Date.now(), windowMs)) {
-        return { status: null }
-      }
+      // Every state is remembered, so done -> working -> done sends the second done.
+      const fresh = shouldSend(event.terminalId ?? event.paneKey, event.state, Date.now(), windowMs)
+      const allowed = parseStates(await orca.settings.get('states'))
+      if (!allowed.has(event.state) || (debounce && !fresh)) return { status: null }
 
       const url = String((await orca.settings.get('webhookUrl')) ?? '').trim()
       if (!isHttpUrl(url)) {
@@ -111,8 +119,13 @@ export default async function activate(orca) {
       }
       warnedNoUrl = false
 
-      const { worktree, repo } = await readWorktree(orca, event)
-      const payload = buildPayload(event, { worktree, repo, host: os.hostname() })
+      const workspace = await lookupWorkspace(orca, event.workspaceId)
+      const payload = buildPayload(event, {
+        worktree: workspace?.name ?? null,
+        branch: workspace?.branch ?? null,
+        repo: null,
+        host: os.hostname(),
+      })
 
       let auth = null
       try {
@@ -121,28 +134,31 @@ export default async function activate(orca) {
         orca.log(`could not read auth secret: ${errText(err)}`)
       }
 
-      return { status: await postWebhook(orca, url, payload, auth) }
+      return { status: await deliver(orca, url, payload, auth) }
     } catch (err) {
       orca.log(`forward failed: ${errText(err)}`)
       return { status: null }
     }
   }
 
-  orca.events.on('agent.status.changed', async (event) => {
-    try {
-      await forward(event)
-    } catch (err) {
-      orca.log(`handler failed: ${errText(err)}`)
-    }
-  })
+  orca.events.on('agent.status.changed', (event) => forward(event))
 
   if (orca.panels?.handle) {
-    orca.panels.handle('auth.set', async ({ value }) => {
-      await setAuthSecret(orca, value ?? '')
-      try {
-        await clearAuthSetting(orca)
-      } catch {
-        // setting may already be empty
+    // Values copied from the Grok Bot routine screen: { url, value } (either or both).
+    orca.panels.handle('auth.set', async ({ url, value } = {}) => {
+      if (url === undefined && value === undefined) throw new Error('provide url and/or value')
+      if (url !== undefined) {
+        const cleaned = String(url).trim()
+        if (!isHttpUrl(cleaned)) throw new Error('url must be an http(s) URL')
+        await orca.host.call('settings.set', { key: 'webhookUrl', value: cleaned })
+      }
+      if (value !== undefined) {
+        await setAuthSecret(orca, value)
+        try {
+          await clearAuthSetting(orca)
+        } catch {
+          // setting may already be empty
+        }
       }
       return { ok: true }
     })
@@ -154,6 +170,7 @@ export default async function activate(orca) {
       } catch {
         hasAuth = false
       }
+      const hasUrl = isHttpUrl(String((await orca.settings.get('webhookUrl')) ?? '').trim())
       let protection = null
       try {
         if (orca.host?.has?.('secrets.protection')) {
@@ -163,7 +180,7 @@ export default async function activate(orca) {
       } catch {
         protection = null
       }
-      return { hasAuth, protection }
+      return { hasAuth, hasUrl, protection }
     })
 
     orca.panels.handle('test.send', async () => {

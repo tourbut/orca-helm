@@ -38,21 +38,31 @@ export function createDebouncer() {
   }
 }
 
+/** One line a Grok Bot routine can relay as is: `main: done (success) - fix login`. */
+function summary(worktree, state, outcome, title) {
+  return `${worktree || 'Orca'}: ${state ?? 'unknown'}${outcome ? ` (${outcome})` : ''}${title ? ` - ${title}` : ''}`
+}
+
 /**
  * @param {Record<string, unknown>} event
- * @param {{ worktree?: string | null, repo?: string | null, host?: string | null }} extra
+ * @param {{ worktree?: string | null, branch?: string | null, repo?: string | null, host?: string | null }} extra
  */
-export function buildPayload(event, { worktree, repo, host }) {
+export function buildPayload(event, { worktree, branch, repo, host }) {
   const mainAgent = event?.mainAgent && typeof event.mainAgent === 'object' ? event.mainAgent : null
+  const state = event?.state ?? null
+  const outcome = mainAgent?.outcome ?? null
+  const title = event?.title ?? null
   return {
     event: 'agent.status.changed',
-    state: event?.state ?? null,
-    outcome: mainAgent?.outcome ?? null,
-    title: event?.title ?? null,
+    text: summary(worktree, state, outcome, title),
+    state,
+    outcome,
+    title,
     terminalId: event?.terminalId ?? null,
     paneKey: event?.paneKey ?? null,
     workspaceId: event?.workspaceId ?? null,
     worktree: worktree ?? null,
+    branch: branch ?? null,
     repo: repo ?? null,
     receivedAt: typeof event?.receivedAt === 'number' ? new Date(event.receivedAt).toISOString() : null,
     host: host ?? null,

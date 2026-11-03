@@ -37,4 +37,7 @@ test('buildPayload shape', () => {
   assert.equal(p.worktree, 'wt')
   assert.equal(p.repo, null)
   assert.equal(p.host, 'box')
+  assert.equal(p.branch, null)
+  assert.equal(p.text, 'wt: done (success)')
+  assert.equal(buildPayload({ state: 'waiting', title: 'fix login' }, {}).text, 'Orca: waiting - fix login')
 })
