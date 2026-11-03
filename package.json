@@ -1,0 +1,17 @@
+{
+  "name": "orca-helm",
+  "version": "0.1.0",
+  "description": "Bot-friendly CLI for a local Orca IDE",
+  "type": "module",
+  "bin": {
+    "orca-helm": "bin/orca-helm.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/tourbut/orca-helm"
+}

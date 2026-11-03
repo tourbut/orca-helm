@@ -1,102 +1,90 @@
-# Grok Bot Notify
+# orca-helm
 
-Forwards Orca `agent.status.changed` events to a webhook. Built for Grok Bot webhook routines; works with any HTTP endpoint.
+Grok Bot 같은 봇이 원격 셸로 **로컬 Orca IDE (v1.4.246)** 를 다루기 위한 작은 CLI입니다. 의존성 없는 Node.js(>=18, ESM) 프로그램이고, 공식 `orca` CLI를 하나의 진입점으로 감쌉니다.
 
-Orca 에이전트 상태 변경을 웹훅으로 전달하는 플러그인입니다. Grok Bot 웹훅 루틴용으로 만들었지만 아무 웹훅에나 쓸 수 있습니다.
+## 왜 있나
 
-## 무엇을 하나요
+원격 PowerShell은 명령마다 승인이 필요합니다. 봇은 안정적인 진입점 하나면 됩니다.
 
-Orca 에이전트 상태(`working` / `blocked` / `waiting` / `done`)가 바뀔 때 설정한 HTTP(S) 웹훅으로 JSON을 POST합니다. 기본값은 `done,waiting,blocked`만 보내며 `working`은 보내지 않습니다. 같은 터미널·페인의 같은 상태는 `debounceSeconds`(기본 30초) 안에 다시 보내지 않습니다.
+- 출력은 UTF-8이라 한글이 유지됩니다.
+- 긴 프롬프트는 명령줄 따옴표 대신 UTF-8 파일(`--file`)로 넘깁니다.
+- `orca worktree ps --json` 은 수십 KB(~68KB)입니다. `status` 가 터미널당 한 줄로 줄입니다.
+- 에이전트가 `done` / `waiting` 인지 알 신호가 없습니다. `wait` 가 폴링합니다.
+- handle 대신 repo, worktree, 브랜치, 제목으로 찾습니다.
 
-## 설치
+## Windows 설치
 
-로컬 개발 폴더로 로드합니다. 첫 실행이 fingerprint를 출력하면 그 값으로 다시 승인합니다.
+Node.js 18 이상, 등록된 Orca CLI, 실행 중인 Orca가 필요합니다.
 
-```sh
-orca plugin dev load <dir> --approve <fingerprint>
+```powershell
+git clone https://github.com/tourbut/orca-helm C:\tools\orca-helm
+cd C:\tools\orca-helm
+.\orca-helm.ps1 status
 ```
 
-또는 폴더를 감시하면서 로드합니다.
+선택: `C:\tools\orca-helm` 을 PATH에 넣습니다. Orca 실행 파일 위치가 다르면 `orca.exe` 전체 경로를 지정합니다.
 
-```sh
-orca plugin dev watch .
+```powershell
+$env:ORCA_HELM_BIN = 'C:\path\to\orca.exe'
 ```
 
-또는 **Settings → Plugins → Development folders**에서 이 폴더를 추가합니다. 로드되면 `local.grokbot-notify`로 보입니다.
+Windows에서는 `orca.cmd`(cmd.exe 래퍼) 대신 같은 폴더의 `orca.exe` 를 직접 실행합니다. 진입점은 `orca-helm.ps1` 또는 `node bin\orca-helm.mjs` 를 쓰세요. `orca-helm.cmd` 는 `chcp 65001` 만 맞춥니다. 긴 텍스트는 `--file` 로 넘깁니다.
 
-## 설정
+## 명령
 
-Orca **Settings**에서 이 플러그인 아래에 표시됩니다.
+```powershell
+.\orca-helm.ps1 status
+.\orca-helm.ps1 status fullops
+.\orca-helm.ps1 status --all --json
+.\orca-helm.ps1 find fullops
+.\orca-helm.ps1 send jevpet --file C:\tmp\prompt.txt
+.\orca-helm.ps1 start fullops --name fix-x --agent claude --file C:\tmp\p.txt
+.\orca-helm.ps1 read jevpet --lines 40
+.\orca-helm.ps1 wait jevpet --timeout 600
+.\orca-helm.ps1 raw -- terminal list --json
+```
 
-| 키 | 설명 |
+기본 출력은 짧은 텍스트입니다. `--json` 은 JSON 한 줄입니다.
+
+| 명령 | 동작 |
 | --- | --- |
-| `webhookUrl` | POST할 HTTP(S) URL |
-| `states` | 전달할 상태. 쉼표로 구분. 기본값 `done,waiting,blocked` |
-| `debounceSeconds` | 같은 키·같은 상태를 다시 보내기 전 대기 초. 기본값 `30` |
-| `authValue` | Authorization 헤더 값. 한 번 붙여 넣으면 워커가 암호화된 secrets로 옮기고 이 칸을 비웁니다 |
+| `status [query] [--all]` | 터미널 한 줄 요약. waiting, working, 그 다음 순. `--all` 은 archived 포함 |
+| `find <query>` | 상위 10개. `worktreeId`, `repoId`, handle 포함 |
+| `read <target> [--lines 40] [--screen]` | handle 또는 이름. 마지막 N줄 |
+| `send <target> (--file \| --text) [--no-enter] [--interrupt]` | 기본은 Enter까지 전송. handle이 정확히 같으면 그 터미널. 아니면 이름 검색. worktree에 터미널이 여러 개면 에이전트가 있는 쪽 |
+| `start <repo> --name <name> [--agent claude\|codex] (--file \| --text)` | `repo list` 로 repo를 고르고 `worktree create` |
+| `wait <target> [--timeout 600] [--interval 5] [--for agent\|tui-idle\|exit] [--fresh 60]` | 기본 `agent`: working을 본 뒤 waiting/done/idle이 되거나, 최근 `--fresh` 초 안에 바뀐 waiting/done이면 끝. 이전 턴의 오래된 done은 무시합니다. `tui-idle` / `exit` 는 `orca terminal wait`. 초 단위 |
+| `raw -- <args>` | 같은 바이너리로 `orca` 에 그대로 전달 |
 
-auth 값은 설정의 `authValue` 칸에 한 번 붙여 넣거나 다음으로 넣습니다.
+`status` 한 줄 예: `fullops/main  t:<handle>  waiting  claude  "title"  12m`
 
-```sh
-orca plugin dev request . auth.set --data '{"value":"..."}'
-```
+텍스트의 상태 칸은 `working` / `waiting` / `done` / `idle` / `unknown` 입니다. `permission` 과 `blocked` 는 `waiting` 으로 모읍니다. `--json` 의 `state` 는 Orca가 준 원래 값입니다.
 
-값은 루틴의 헤더 값이며 `Authorization:` 접두어 없이 넣습니다. 워커가 암호화된 secrets로 옮기고 칸을 비웁니다. Linux `basic_text` 환경에서는 `secrets.set`이 실패할 수 있습니다.
+## 종료 코드
 
-현재 저장 여부는 다음으로 확인합니다.
+| 코드 | 의미 |
+| --- | --- |
+| 0 | 성공 |
+| 1 | 오류. stderr 는 `orca-helm: ...` |
+| 2 | `wait` 시간 초과 |
+| 3 | 대상이 여러 개. 후보를 출력하고 끝남 |
 
-```sh
-orca plugin dev request . auth.status
-```
+## 참고
 
-## 테스트
+- 터미널 handle은 그 Orca 프로세스가 살아있는 동안만 유효합니다. 명령마다 다시 조회합니다.
+- 프롬프트 파일은 UTF-8입니다. BOM은 빼고, CRLF는 LF로 바꿉니다.
+- Linux는 `orca-ide` 를 먼저 찾고, 없을 때 `orca` 를 찾습니다. macOS는 `orca`, Windows는 `orca.exe` 입니다. `ORCA_HELM_BIN` 이 있으면 그 경로를 씁니다.
 
-```sh
-orca plugin dev emit . agent.status.changed --data '{"workspaceId":null,"paneKey":"p1","terminalId":"t1","title":"demo","state":"done","receivedAt":1730000000000,"mainAgent":{"state":"done","outcome":"success","stateStartedAt":1730000000000}}'
-```
+## plugins/grokbot-notify
 
-```sh
-orca plugin dev request . test.send
-```
+`plugins/grokbot-notify/` 는 에이전트 상태 변경을 웹훅으로 보내던 선택 플러그인입니다. 설치와 설정은 [plugins/grokbot-notify/README.md](plugins/grokbot-notify/README.md) 에 있습니다.
 
-Windows PowerShell에서는 `--data`의 JSON 따옴표가 깨질 수 있으니, 필요하면 `'{\"value\":\"...\"}'`처럼 이스케이프하거나 Git Bash에서 실행하세요.
+## English
 
-```sh
-orca plugin logs local.grokbot-notify
-```
+orca-helm is a dependency-free Node.js CLI so a bot such as Grok Bot can drive a local Orca IDE v1.4.246 from a remote shell. One entry point fits a shell that approves each command. It writes UTF-8, reads long prompts from a file, compresses `worktree ps` to one line per terminal, waits until an agent is waiting or done, and resolves a worktree by name.
 
-```sh
-node --test test/
-```
+On Windows, clone to `C:\tools\orca-helm`, install Node.js 18+, and run `.\orca-helm.ps1 status`. Add that folder to `PATH` if you want. Set `ORCA_HELM_BIN` to the full path of `orca.exe` when it is not on `PATH`. Prefer `orca-helm.ps1` or `node bin/orca-helm.mjs`, and pass prompts with `--file`. Linux looks up `orca-ide` first.
 
-## 보내는 JSON 예시
+`plugins/grokbot-notify/` is the older optional webhook notify plugin. See its README.
 
-```json
-{
-  "event": "agent.status.changed",
-  "state": "done",
-  "outcome": "success",
-  "title": "demo",
-  "terminalId": "t1",
-  "paneKey": "p1",
-  "workspaceId": null,
-  "worktree": "my-app",
-  "repo": null,
-  "receivedAt": "2024-10-27T00:53:20.000Z",
-  "host": "hostname"
-}
-```
-
-`outcome`은 `event.mainAgent.outcome`이고 없으면 `null`입니다. `worktree`는 이벤트의 `terminalId`가 현재 워크스페이스 터미널에 있을 때 `workspace.readContext`의 `displayName`이며, 아니면 `null`입니다. `repo`는 알 수 없으면 `null`입니다.
-
-## 공개 배포 방법
-
-나중에:
-
-1. `orca plugin validate .`
-2. `orca-plugin.json`의 `version`을 올려 커밋·푸시하고, 그 커밋에 태그를 붙여 푸시합니다: `git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z`
-3. `gh repo edit tourbut/orca-grokbot --add-topic orca-plugin`
-
-## 상태
-
-실험 단계입니다. 실제 Orca에서 아직 검증하지 않았습니다. Grok Bot 웹훅 루틴용으로 만들었지만 아무 웹훅에나 쓸 수 있습니다.
+Exit codes: `0` ok, `1` error, `2` wait timeout, `3` ambiguous match.

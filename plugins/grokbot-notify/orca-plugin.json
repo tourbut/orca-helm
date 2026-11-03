@@ -6,7 +6,7 @@
   "version": "0.1.0",
   "description": "Forwards Orca agent status changes to a webhook. Built for Grok Bot webhook routines; works with any HTTP endpoint.",
   "license": "MIT",
-  "repository": "https://github.com/tourbut/orca-grokbot",
+  "repository": "https://github.com/tourbut/orca-helm",
   "author": {
     "name": "tourbut"
   },
