@@ -7,7 +7,7 @@
     "orca-helm": "bin/orca-helm.mjs"
   },
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/*.test.mjs plugins/grokbot-notify/test/*.test.mjs"
   },
   "engines": {
     "node": ">=18"

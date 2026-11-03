@@ -66,7 +66,7 @@ orca plugin logs local.grokbot-notify
 ```
 
 ```sh
-node --test test/
+node --test test/*.test.mjs plugins/grokbot-notify/test/*.test.mjs
 ```
 
 ## 보내는 JSON 예시
