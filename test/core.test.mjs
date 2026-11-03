@@ -245,6 +245,7 @@ test('tailLines drops ANSI and trailing blank lines', () => {
   assert.deepEqual(tailLines(['keep', '\u001b[1;31mhi\u001b[0m', '', '  '], 2), ['keep', 'hi'])
   assert.deepEqual(tailLines(['\u001b[31mred\u001b[0m', ''], 40), ['red'])
   assert.deepEqual(tailLines(['a', 'b', 'c'], 1), ['c'])
+  assert.deepEqual(tailLines(['a', 'b', 'c'], 0), [])
 })
 
 test('plainLines drops TUI chrome and keeps the conversation', () => {
