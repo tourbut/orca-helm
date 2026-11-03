@@ -339,6 +339,45 @@ test('plainLines keeps the main column and strips borders and ANSI', () => {
   )
 })
 
+test('plainLines keeps content lines: brackets, text after a box, prose, words in a box', () => {
+  assert.deepEqual(
+    plainLines([
+      '● code:',
+      '  if (x) {',
+      '  }',
+      '});',
+      ')',
+      '...',
+      'This uses 50% of context windows.',
+      '╭────╮',
+      '│ box │',
+      '╰────╯',
+      'after the box',
+      '│ git push origin main │',
+      '│ Workers 3 │',
+      '  ⎿  Added 2 lines',
+      '      340  })',
+      "      342 +const box = '╭─╮'",
+      '─────────── my-session ─',
+      '❯ next prompt',
+      '───────────',
+    ]),
+    [
+      '● code:',
+      '  if (x) {',
+      '  }',
+      '});',
+      ')',
+      '...',
+      'This uses 50% of context windows.',
+      'box',
+      'after the box',
+      'git push origin main',
+      "      342 +const box = '╭─╮'",
+    ],
+  )
+})
+
 test('resolveOrcaBin honors a stub on PATH', () => {
   if (process.platform === 'win32') return
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orca-helm-'))
