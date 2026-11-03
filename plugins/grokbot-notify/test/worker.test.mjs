@@ -41,7 +41,7 @@ function mockOrca(workspaces = []) {
   let onSettings = null
   const orca = {
     log: (message) => logs.push(message),
-    settings: { get: async (key) => settings[key], onDidChange: (fn) => (onSettings = fn) },
+    settings: { get: async (key) => (key === undefined ? { ...settings } : settings[key]), onDidChange: (fn) => (onSettings = fn) },
     events: { on: (_event, fn) => (listener = fn) },
     panels: { handle: (name, fn) => (handlers[name] = fn) },
     host: {
@@ -70,7 +70,7 @@ test('worker forwards done/waiting/blocked to the routine once, with auth, and r
     assert.deepEqual(await handlers['auth.set']({ url: stub.url, value: 'Authorization: Bearer s3cret' }), { ok: true })
     assert.equal(settings.webhookUrl, stub.url)
     assert.equal(secrets.authValue, 'Bearer s3cret')
-    assert.deepEqual(await handlers['auth.status'](), { hasAuth: true, hasUrl: true, protection: 'os-keyring' })
+    assert.deepEqual(await handlers['auth.status'](), { hasAuth: true, hasUrl: true, protection: 'os-keyring', routes: [], errors: [] })
 
     const event = (state) => ({ workspaceId: 'wt1', paneKey: 't:l', terminalId: 'term1', title: 'fix login', state, receivedAt: 1 })
     await emit(event('working'))
@@ -102,6 +102,66 @@ test('worker forwards done/waiting/blocked to the routine once, with auth, and r
     assert.equal(settings.authValue, '')
   } finally {
     stub.close()
+    git.cleanup()
+  }
+})
+
+test('routes: one line per bot, each gets only its workspaces with its own auth, repeat check and retry', async () => {
+  const [pullo, nori, link] = [await startStub([503, 200]), await startStub([]), await startStub([])]
+  const git = gitFixture()
+  const { orca, settings, secrets, handlers, logs, emit } = mockOrca([
+    { id: 'wt1', kind: 'worktree', name: 'main', branch: 'main', path: git.worktree },
+    { id: 'wt2', kind: 'worktree', name: 'other', branch: 'other', path: git.root + '/elsewhere' },
+  ])
+  settings.webhookUrl = nori.url // ignored once routes has a line
+  settings.routes = [
+    '# bots',
+    `풀로 | Fullops-Squad-plugin, SHOP | ${pullo.url} | Authorization: Bearer a1`,
+    '',
+    `노리 | jevpet | ${nori.url} | Bearer b2`,
+    `링크 | wt/MAIN | ${link.url}`,
+    'broken line with Bearer z9',
+    `없음 | x | ftp://nope | Bearer z9`,
+  ].join('\n')
+  try {
+    await activate(orca)
+    assert.deepEqual(settings.routes.split('\n').slice(1, 4), [
+      `풀로 | Fullops-Squad-plugin, SHOP | ${pullo.url} | (saved)`,
+      '',
+      `노리 | jevpet | ${nori.url} | (saved)`,
+    ])
+    assert.ok(Object.values(secrets).includes('Bearer a1'))
+    assert.ok(logs.includes('routes line 6 skipped: expected name | workspaces | URL | Authorization'))
+    assert.ok(logs.includes('routes line 7 skipped: URL is not http(s)'))
+
+    const done = (workspaceId) => ({ workspaceId, paneKey: 't:l', terminalId: 'term1', title: 'fix', state: 'done', receivedAt: 1 })
+    await emit(done('wt1'))
+    assert.equal(pullo.received.length, 2) // 503, then the retry
+    assert.equal(pullo.received[1].auth, 'Bearer a1')
+    assert.equal(pullo.received[1].body.route, '풀로')
+    assert.equal(pullo.received[1].body.repo, 'shop')
+    assert.equal(link.received.length, 1)
+    assert.equal(link.received[0].auth, undefined)
+
+    await emit(done('wt1')) // a repeat for both routes
+    await emit(done('wt2')) // no route matches: no POST at all
+    assert.deepEqual([pullo, nori, link].map((s) => s.received.length), [2, 0, 1])
+
+    // Pasting a new line for 노리 replaces the old one.
+    await handlers['auth.set']({ route: `노리 | jevpet,SHOP | ${nori.url} | Bearer b3` })
+    assert.equal(settings.routes.split('\n').filter((line) => line.startsWith('노리')).length, 1)
+    await emit({ ...done('wt1'), terminalId: 'term2' })
+    assert.equal(nori.received.at(-1).auth, 'Bearer b3')
+
+    const sent = await handlers['test.send']()
+    assert.deepEqual(sent.routes.map((r) => r.route), ['풀로', '링크', '노리'])
+    const status = await handlers['auth.status']()
+    assert.deepEqual(status.routes.map((r) => [r.name, r.hasAuth]), [['풀로', true], ['링크', false], ['노리', true]])
+    await assert.rejects(handlers['auth.set']({ route: 'only | two' }), /expected name/)
+
+    assert.deepEqual(logs.filter((line) => /Bearer|t0ken/.test(line)), [])
+  } finally {
+    for (const stub of [pullo, nori, link]) stub.close()
     git.cleanup()
   }
 })

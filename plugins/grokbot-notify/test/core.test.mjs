@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseStates, createDebouncer, buildPayload, repoNameFromGit } from '../worker/core.mjs'
+import { parseStates, createDebouncer, buildPayload, repoNameFromGit, parseWorkspaces, matchesWorkspace, parseRoutes, savedRouteLine } from '../worker/core.mjs'
 
 test('parseStates defaults when empty or invalid', () => {
   assert.deepEqual([...parseStates('')].sort(), ['blocked', 'done', 'waiting'])
@@ -49,4 +49,31 @@ test('repoNameFromGit reads the main worktree folder from .git', () => {
   assert.equal(repoNameFromGit('/srv/wt/feat', 'gitdir: /srv/shop.git/worktrees/feat'), 'shop')
   assert.equal(repoNameFromGit('/work/shop-wt/feat', 'gitdir: ../../shop/.git/worktrees/feat'), 'shop')
   assert.equal(repoNameFromGit('/x', 'not a git file'), null)
+})
+
+test('route workspaces match repo, workspace name or a path part, ignoring case', () => {
+  const info = { repo: 'orca-helm', name: 'main', path: 'D:\\workspace\\orca-helm' }
+  assert.deepEqual(parseWorkspaces(' Fullops-Squad-plugin , ,ORCA-HELM '), ['fullops-squad-plugin', 'orca-helm'])
+  assert.equal(matchesWorkspace(parseWorkspaces(''), info), true)
+  assert.equal(matchesWorkspace(parseWorkspaces('Orca-Helm'), info), true)
+  assert.equal(matchesWorkspace(parseWorkspaces('MAIN'), info), true)
+  assert.equal(matchesWorkspace(parseWorkspaces('workspace/orca'), info), true)
+  assert.equal(matchesWorkspace(parseWorkspaces('Fullops-Squad-plugin'), info), false)
+  assert.equal(matchesWorkspace(parseWorkspaces('x'), { repo: null, name: null, path: null }), false)
+})
+
+test('parseRoutes reads one bot per line and keeps the last line for a name', () => {
+  const { routes, errors, rows } = parseRoutes(
+    ['# comment', '풀로 | a, B | https://x/1 | Authorization: Bearer 1', '', 'oops', ' | a | https://x', '풀로 | c | https://x/2 | (saved)'].join('\r\n')
+  )
+  assert.deepEqual(errors, [
+    { line: 4, reason: 'expected name | workspaces | URL | Authorization' },
+    { line: 5, reason: 'missing bot name' },
+  ])
+  assert.equal(routes.length, 1)
+  assert.deepEqual([routes[0].workspaces, routes[0].saved, routes[0].auth], [['c'], true, null])
+  assert.equal(rows.some((row) => row.number === 2), false)
+  const first = parseRoutes('풀로 | a | https://x/1 | Authorization: Bearer 1').routes[0]
+  assert.equal(first.auth, 'Bearer 1')
+  assert.equal(savedRouteLine(first), '풀로 | a | https://x/1 | (saved)')
 })

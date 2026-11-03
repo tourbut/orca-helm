@@ -23,12 +23,28 @@
     ],
     "settings": [
       {
+        "key": "routes",
+        "title": "Routes (one Grok Bot per line)",
+        "description": "One line per bot: name | workspaces | routine URL | Authorization. Copy the URL and the Authorization value from that bot's Grok Bot routine screen. Workspaces are comma-separated repo names, worktree names or path parts (case-insensitive; empty means every workspace). On save the Authorization value moves to encrypted secrets and the line ends in (saved). A new line for the same name replaces the old one. # starts a comment.",
+        "type": "string",
+        "default": "",
+        "multiline": true,
+        "placeholder": "풀로 | Fullops-Squad-plugin,orca-helm | https://... | Bearer ..."
+      },
+      {
         "key": "webhookUrl",
         "title": "Grok Bot routine URL",
-        "description": "The routine's URL from the Grok Bot routine screen. Orca alerts are POSTed here.",
+        "description": "Only while Routes is empty: one routine URL that gets every workspace's alerts.",
         "type": "string",
         "default": "",
         "placeholder": "https://..."
+      },
+      {
+        "key": "authValue",
+        "title": "Authorization value",
+        "description": "Only while Routes is empty: the Authorization value for the URL above. Paste it once; the worker moves it into encrypted secrets and clears this field.",
+        "type": "string",
+        "default": ""
       },
       {
         "key": "states",
@@ -44,13 +60,6 @@
         "type": "integer",
         "default": 30,
         "minimum": 0
-      },
-      {
-        "key": "authValue",
-        "title": "Authorization value",
-        "description": "The Authorization value from the Grok Bot routine screen. Paste it once; the worker moves it into encrypted secrets and clears this field.",
-        "type": "string",
-        "default": ""
       }
     ]
   },

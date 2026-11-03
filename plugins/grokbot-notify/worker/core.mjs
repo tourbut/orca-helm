@@ -60,7 +60,7 @@ export function repoNameFromGit(worktreePath, gitFile) {
 
 const folded = (value) => String(value ?? '').toLowerCase().replaceAll('\\', '/')
 
-/** The `workspaces` setting: lowercased entries. Empty means every workspace. */
+/** A route's workspaces field: lowercased entries. Empty means every workspace. */
 export function parseWorkspaces(str) {
   return typeof str === 'string' ? str.split(',').map((part) => folded(part.trim())).filter(Boolean) : []
 }
@@ -72,6 +72,68 @@ export function matchesWorkspace(entries, { repo, name, path: worktreePath }) {
   return entries.some((entry) => entry === folded(repo) || entry === folded(name) || where.includes(entry))
 }
 
+export function isHttpUrl(url) {
+  try {
+    const protocol = new URL(url).protocol
+    return protocol === 'http:' || protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+export function stripAuthPrefix(value) {
+  return String(value ?? '').replace(/^\s*authorization:\s*/i, '').trim()
+}
+
+export const SAVED = '(saved)'
+const ROUTE_FORMAT = 'expected name | workspaces | URL | Authorization'
+
+/** One `routes` line. Errors name the problem only, never a value. */
+function parseRouteLine(raw) {
+  const line = raw.trim()
+  if (!line || line.startsWith('#')) return {}
+  const parts = line.split('|').map((part) => part.trim())
+  if (parts.length < 3) return { error: ROUTE_FORMAT }
+  const [name, workspacesText, url] = parts
+  if (!name) return { error: 'missing bot name' }
+  if (!isHttpUrl(url)) return { error: 'URL is not http(s)' }
+  const auth = stripAuthPrefix(parts.slice(3).join('|'))
+  return {
+    route: {
+      key: name.toLowerCase(),
+      name,
+      workspacesText,
+      workspaces: parseWorkspaces(workspacesText),
+      url,
+      saved: auth === SAVED,
+      auth: auth && auth !== SAVED ? auth : null,
+    },
+  }
+}
+
+/**
+ * The `routes` setting: one Grok Bot per line, `name | workspaces | URL | Authorization`. Blank lines and `#`
+ * comments are skipped. A later line for the same name (case-insensitive) replaces the earlier one.
+ * `rows` is every line to keep, in order; `errors` hold a line number and reason.
+ */
+export function parseRoutes(str) {
+  const rows = String(str ?? '')
+    .split(/\r?\n/)
+    .map((raw, index) => ({ raw, number: index + 1, ...parseRouteLine(raw) }))
+  const last = new Map()
+  for (const row of rows) if (row.route) last.set(row.route.key, row)
+  return {
+    rows: rows.filter((row) => !row.route || last.get(row.route.key) === row),
+    routes: [...last.values()].sort((a, b) => a.number - b.number).map((row) => row.route),
+    errors: rows.filter((row) => row.error).map((row) => ({ line: row.number, reason: row.error })),
+  }
+}
+
+/** The line kept in Settings once a route's Authorization is in secrets. */
+export function savedRouteLine(route) {
+  return `${route.name} | ${route.workspacesText} | ${route.url} | ${SAVED}`
+}
+
 /** One line a Grok Bot routine can relay as is: `shop/main: done (success) - fix login`. */
 function summary(repo, worktree, state, outcome, title) {
   const label = repo && worktree ? `${repo}/${worktree}` : worktree || repo || 'Orca'
@@ -80,9 +142,9 @@ function summary(repo, worktree, state, outcome, title) {
 
 /**
  * @param {Record<string, unknown>} event
- * @param {{ worktree?: string | null, branch?: string | null, repo?: string | null, host?: string | null }} extra
+ * @param {{ worktree?: string | null, branch?: string | null, repo?: string | null, route?: string | null, host?: string | null }} extra
  */
-export function buildPayload(event, { worktree, branch, repo, host }) {
+export function buildPayload(event, { worktree, branch, repo, route, host }) {
   const mainAgent = event?.mainAgent && typeof event.mainAgent === 'object' ? event.mainAgent : null
   const state = event?.state ?? null
   const outcome = mainAgent?.outcome ?? null
@@ -99,6 +161,7 @@ export function buildPayload(event, { worktree, branch, repo, host }) {
     worktree: worktree ?? null,
     branch: branch ?? null,
     repo: repo ?? null,
+    route: route ?? null,
     receivedAt: typeof event?.receivedAt === 'number' ? new Date(event.receivedAt).toISOString() : null,
     host: host ?? null,
   }
