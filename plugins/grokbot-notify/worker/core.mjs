@@ -134,6 +134,58 @@ export function savedRouteLine(route) {
   return `${route.name} | ${route.workspacesText} | ${route.url} | ${SAVED}`
 }
 
+/** The line the Grok Bot panel writes: `name | a,b | URL`, plus ` | (saved)` when an Authorization is stored. */
+export function routeLine({ name, workspaces, url, saved }) {
+  return `${name} | ${workspaces.join(',')} | ${url}${saved ? ` | ${SAVED}` : ''}`
+}
+
+/** Why the panel's route cannot be written as one line, or null. Never echoes a value. */
+export function routeProblem({ name, url, workspaces }) {
+  const bad = (value) => /[|\r\n]/.test(value)
+  if (!text(name)) return 'enter a bot name'
+  if (bad(name)) return 'a bot name cannot contain | or a line break'
+  if (!isHttpUrl(text(url)) || bad(url)) return 'enter an http(s) routine URL'
+  if (workspaces.some((entry) => bad(entry) || entry.includes(','))) return 'a workspace cannot contain , or |'
+  return null
+}
+
+const text = (value) => String(value ?? '').trim()
+const lines = (str) => String(str ?? '').replace(/\r\n/g, '\n').split('\n')
+const keyOf = (raw) => parseRouteLine(raw).route?.key
+
+/** `line` takes the place of the first line for any of `keys`; later lines for them go. With none, it is appended. */
+export function upsertRouteLine(str, keys, line) {
+  const out = []
+  let placed = false
+  for (const raw of lines(str)) {
+    if (!keys.includes(keyOf(raw))) out.push(raw)
+    else if (!placed) {
+      out.push(line)
+      placed = true
+    }
+  }
+  while (out.length > 0 && out.at(-1).trim() === '') out.pop()
+  if (!placed) out.push(line)
+  return out.join('\n')
+}
+
+/** The routes text without any line for `key`. */
+export function removeRouteLines(str, key) {
+  return lines(str)
+    .filter((raw) => keyOf(raw) !== key)
+    .join('\n')
+}
+
+/** Checkbox choices for the panel: each workspace's repo name, or its own name when it has none. */
+export function workspaceOptions(infos) {
+  const seen = new Map()
+  for (const info of infos) {
+    const label = text(info.repo) || text(info.name)
+    if (label && !seen.has(label.toLowerCase())) seen.set(label.toLowerCase(), label)
+  }
+  return [...seen.values()].sort((a, b) => a.localeCompare(b))
+}
+
 /** One line a Grok Bot routine can relay as is: `shop/main: done (success) - fix login`. */
 function summary(repo, worktree, state, outcome, title) {
   const label = repo && worktree ? `${repo}/${worktree}` : worktree || repo || 'Orca'

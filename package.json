@@ -1,6 +1,6 @@
 {
   "name": "orca-helm",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Lets Grok Bot drive a local Orca IDE: a CLI it runs on the PC plus the grokbot-notify plugin that hands Orca's agent alerts to Grok Bot",
   "type": "module",
   "bin": {

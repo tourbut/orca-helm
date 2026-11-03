@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseStates, createDebouncer, buildPayload, repoNameFromGit, parseWorkspaces, matchesWorkspace, parseRoutes, savedRouteLine } from '../worker/core.mjs'
+import { parseStates, createDebouncer, buildPayload, repoNameFromGit, parseWorkspaces, matchesWorkspace, parseRoutes, savedRouteLine, upsertRouteLine, removeRouteLines, routeProblem, workspaceOptions } from '../worker/core.mjs'
 
 test('parseStates defaults when empty or invalid', () => {
   assert.deepEqual([...parseStates('')].sort(), ['blocked', 'done', 'waiting'])
@@ -76,4 +76,17 @@ test('parseRoutes reads one bot per line and keeps the last line for a name', ()
   const first = parseRoutes('풀로 | a | https://x/1 | Authorization: Bearer 1').routes[0]
   assert.equal(first.auth, 'Bearer 1')
   assert.equal(savedRouteLine(first), '풀로 | a | https://x/1 | (saved)')
+})
+
+test('panel edits: a line is replaced in place or appended, removed by name, and checked first', () => {
+  const NL = String.fromCharCode(10)
+  const text = ['# bots', 'A | x | https://a | (saved)', 'b | y | https://b', 'a | old | https://a2'].join(NL)
+  assert.equal(upsertRouteLine(text, ['a'], 'A | z | https://a3'), ['# bots', 'A | z | https://a3', 'b | y | https://b'].join(NL))
+  assert.equal(upsertRouteLine('', ['c'], 'c | | https://c'), 'c | | https://c')
+  assert.equal(removeRouteLines(text, 'a'), ['# bots', 'b | y | https://b'].join(NL))
+  assert.equal(routeProblem({ name: 'a|b', url: 'https://a', workspaces: [] }), 'a bot name cannot contain | or a line break')
+  assert.equal(routeProblem({ name: 'a', url: 'ftp://a', workspaces: [] }), 'enter an http(s) routine URL')
+  assert.equal(routeProblem({ name: 'a', url: 'https://a', workspaces: ['x,y'] }), 'a workspace cannot contain , or |')
+  assert.equal(routeProblem({ name: 'a', url: 'https://a', workspaces: ['x'] }), null)
+  assert.deepEqual(workspaceOptions([{ repo: 'shop', name: 'main' }, { repo: 'SHOP', name: 'dev' }, { repo: null, name: 'notes' }]), ['notes', 'shop'])
 })

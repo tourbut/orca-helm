@@ -10,9 +10,14 @@ import {
   matchesWorkspace,
   parseRoutes,
   parseStates,
+  removeRouteLines,
   repoNameFromGit,
+  routeLine,
+  routeProblem,
   savedRouteLine,
   stripAuthPrefix,
+  upsertRouteLine,
+  workspaceOptions,
 } from './core.mjs'
 
 const FETCH_MS = 10_000
@@ -145,6 +150,17 @@ function repoOf(worktreePath) {
   }
 }
 
+/** Every workspace's repo name (or its own name) for the panel's checkboxes. */
+async function listWorkspaceOptions(orca) {
+  try {
+    if (!orca.host?.has?.('workspace.list')) return []
+    const { workspaces } = await orca.host.call('workspace.list', {})
+    return workspaceOptions((workspaces ?? []).map((ws) => ({ name: ws.name, repo: repoOf(ws.path) })))
+  } catch {
+    return []
+  }
+}
+
 /** Name, branch, path and repo of the event's worktree. A local worktree's id is `<repoId>::<path>`. */
 async function workspaceInfo(orca, workspaceId) {
   const ws = await lookupWorkspace(orca, workspaceId)
@@ -193,8 +209,11 @@ export default async function activate(orca) {
   let warnedNoUrl = false
 
   await migrateAuth(orca, seen)
-  // Move pasted values out of plain settings now, not at the next alert.
-  orca.settings.onDidChange?.(() => migrateAuth(orca, seen))
+  // Move pasted values out of plain settings now, not at the next alert; open panels redraw.
+  orca.settings.onDidChange?.(async (change) => {
+    await migrateAuth(orca, seen)
+    if (!change?.key || change.key === 'routes') orca.panels?.post?.('routes.changed', {})
+  })
 
   /** `test` (test.send) goes to every route and skips the workspace match and the repeat check. */
   async function forward(event, { test = false } = {}) {
@@ -250,6 +269,66 @@ export default async function activate(orca) {
   orca.events.on('agent.status.changed', (event) => forward(event))
 
   if (orca.panels?.handle) {
+    /** What the Grok Bot panel draws. Authorization values never leave the worker: only hasAuth. */
+    async function panelState() {
+      await migrateAuth(orca, seen)
+      const settings = await readSettings(orca)
+      const parsed = parseRoutes(settings.routes)
+      const routes = []
+      for (const route of parsed.routes) {
+        let hasAuth = Boolean(route.auth)
+        if (!hasAuth && route.saved) {
+          try {
+            hasAuth = Boolean(await getSecret(orca, routeSecretKey(route)))
+          } catch {
+            hasAuth = false
+          }
+        }
+        routes.push({ name: route.name, url: route.url, workspaces: route.workspacesText.split(',').map(text).filter(Boolean), hasAuth })
+      }
+      return { routes, workspaces: await listWorkspaceOptions(orca), errors: parsed.errors }
+    }
+
+    orca.panels.handle('routes.list', () => panelState())
+
+    // { previousName, name, url, workspaces, auth }: auth empty keeps the stored value (renames move it).
+    orca.panels.handle('routes.save', async (input = {}) => {
+      const route = {
+        name: text(input.name),
+        url: text(input.url),
+        workspaces: (Array.isArray(input.workspaces) ? input.workspaces : []).map(text).filter(Boolean),
+      }
+      const problem = routeProblem(route)
+      if (problem) throw new Error(problem)
+      const settings = await readSettings(orca)
+      const key = route.name.toLowerCase()
+      const previousKey = text(input.previousName).toLowerCase() || key
+      const taken = parseRoutes(settings.routes).routes.some((other) => other.key === key && other.key !== previousKey)
+      if (taken) throw new Error('another bot already has this name')
+
+      const secretKey = routeSecretKey({ key })
+      const previousSecret = routeSecretKey({ key: previousKey })
+      const auth = stripAuthPrefix(input.auth)
+      if (auth) await setSecret(orca, secretKey, auth)
+      else if (previousKey !== key) {
+        const kept = await getSecret(orca, previousSecret).catch(() => null)
+        if (kept) await setSecret(orca, secretKey, kept)
+      }
+      const saved = Boolean(auth) || Boolean(await getSecret(orca, secretKey).catch(() => null))
+      await setSetting(orca, 'routes', upsertRouteLine(settings.routes, [previousKey, key], routeLine({ ...route, saved })))
+      if (previousKey !== key) await orca.host.call('secrets.delete', { key: previousSecret }).catch(() => {})
+      return panelState()
+    })
+
+    orca.panels.handle('routes.delete', async (input = {}) => {
+      const key = text(input.name).toLowerCase()
+      if (!key) throw new Error('enter a bot name')
+      const settings = await readSettings(orca)
+      await setSetting(orca, 'routes', removeRouteLines(settings.routes, key))
+      await orca.host.call('secrets.delete', { key: routeSecretKey({ key }) }).catch(() => {})
+      return panelState()
+    })
+
     // Values copied from the Grok Bot routine screen: { route: "name | workspaces | URL | Authorization" },
     // or { url, value } for the single webhookUrl/authValue.
     orca.panels.handle('auth.set', async ({ route, url, value } = {}) => {

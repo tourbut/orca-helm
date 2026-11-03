@@ -3,7 +3,7 @@
   "execution": "trusted-worker",
   "id": "grokbot-notify",
   "name": "Grok Bot Notify",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Hands Orca's agent alerts (done, waiting, blocked) from Orca's agent.status.changed hook to Grok Bot. The alert half of orca-helm.",
   "license": "MIT",
   "repository": "https://github.com/tourbut/orca-helm",
@@ -21,11 +21,20 @@
         "on": "agent.status.changed"
       }
     ],
+    "panels": [
+      {
+        "id": "routes",
+        "title": "Grok Bot",
+        "icon": "bot",
+        "entry": "plugins/grokbot-notify/panel/routes.tsx",
+        "ui": "components"
+      }
+    ],
     "settings": [
       {
         "key": "routes",
         "title": "Routes (one Grok Bot per line)",
-        "description": "One line per bot: name | workspaces | routine URL | Authorization. Copy the URL and the Authorization value from that bot's Grok Bot routine screen. Workspaces are comma-separated repo names, worktree names or path parts (case-insensitive; empty means every workspace). On save the Authorization value moves to encrypted secrets and the line ends in (saved). A new line for the same name replaces the old one. # starts a comment.",
+        "description": "Edited from the Grok Bot panel in the right sidebar (one card per bot, workspaces as checkboxes). It stores one line per bot: name | workspaces | routine URL | Authorization; typing lines here still works. On save the Authorization value moves to encrypted secrets and the line ends in (saved).",
         "type": "string",
         "default": "",
         "multiline": true,
