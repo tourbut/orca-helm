@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { parseArgs } from '../lib/core.mjs'
+import { isFlagValue, parseArgs } from '../lib/core.mjs'
 import { main } from '../lib/cli.mjs'
 
 function peelOut(argv) {
@@ -13,11 +13,10 @@ function peelOut(argv) {
     }
     if (token === '--out') {
       const next = argv[i + 1]
-      if (next === undefined || next.startsWith('-')) out = true
-      else {
+      if (isFlagValue(next)) {
         out = next
         i += 1
-      }
+      } else out = true
       continue
     }
     if (token.startsWith('--out=')) {

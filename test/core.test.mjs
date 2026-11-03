@@ -21,6 +21,11 @@ test('parseArgs reads positionals, flags, booleans, and passthrough', () => {
   assert.equal(args.flags.lines, '40')
   assert.equal(args.flags.file, 'p.txt')
   assert.deepEqual(args.rest, ['terminal', 'list'])
+  const dash = parseArgs(['send', 'x', '--text', '- item', '--lines', '-1', '--all', '--no-enter'])
+  assert.deepEqual(dash.positionals, ['send', 'x'])
+  assert.equal(dash.flags.text, '- item')
+  assert.equal(dash.flags.lines, '-1')
+  assert.equal(dash.flags['no-enter'], true)
 })
 
 test('fuzzyScore orders exact, prefix, substring, subsequence, including Hangul', () => {
