@@ -1,30 +1,36 @@
-# The parent shell decodes this process's stdout with its own code page.
-# Read node as UTF-8 strings, then emit the code page the parent will use.
-$orig = [Console]::OutputEncoding
-$utf8 = New-Object System.Text.UTF8Encoding $false
-[Console]::OutputEncoding = $utf8
+# node writes stdout to a temp file as UTF-8 (ORCA_HELM_STDOUT_FILE) and this script reads it back.
+# Decoding a pipe would mean changing [Console]::OutputEncoding, after which Windows PowerShell 5.1
+# writes this script's own output as UTF-8 too. Lines go out through the pipeline, so the host encodes
+# them for the parent and `$o = .\orca-helm.ps1 ...` captures them even when the host is redirected.
 if (Test-Path variable:PSNativeCommandUseErrorActionPreference) {
   $PSNativeCommandUseErrorActionPreference = $false
 }
 
-$lines = @(& node "$PSScriptRoot\bin\orca-helm.mjs" @args)
-$code = $LASTEXITCODE
-
-$forceUtf8 = $env:ORCA_HELM_ENCODING -eq 'utf8'
-$redirected = $false
-try { $redirected = [Console]::IsOutputRedirected } catch { $redirected = $false }
-if ($redirected -and -not $forceUtf8) {
-  [Console]::OutputEncoding = $orig
+$tmp = [IO.Path]::GetTempFileName()
+$prevFile = $env:ORCA_HELM_STDOUT_FILE
+$env:ORCA_HELM_STDOUT_FILE = $tmp
+$code = $null
+$text = ''
+try {
+  & node "$PSScriptRoot\bin\orca-helm.mjs" @args
+  $code = $LASTEXITCODE
+  $text = [IO.File]::ReadAllText($tmp, (New-Object System.Text.UTF8Encoding $false))
+} finally {
+  $env:ORCA_HELM_STDOUT_FILE = $prevFile
+  Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
 }
 
-if ($lines.Count -gt 0) {
-  if ($redirected) {
-    # shortcut: this bypasses the pipeline, so `$o = .\orca-helm.ps1` inside a redirected host captures nothing
-    # (Write-Output here turns 5.1 -File output into UTF-8); upgrade by decoding node's stdout without [Console]::OutputEncoding.
-    foreach ($line in $lines) { [Console]::Out.WriteLine($line) }
-  } else {
-    foreach ($line in $lines) { Write-Output $line }
+$orig = [Console]::OutputEncoding
+try {
+  # The console code page is shared with the parent, so put it back after writing.
+  if ($env:ORCA_HELM_ENCODING -eq 'utf8') {
+    [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
   }
+  if ($text.Length -gt 0) {
+    ($text -replace '\r?\n\z', '') -split '\r?\n'
+  }
+} finally {
+  if ([Console]::OutputEncoding.CodePage -ne $orig.CodePage) { [Console]::OutputEncoding = $orig }
 }
 
 if ($null -eq $code) { $code = 1 }
