@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseStates, createDebouncer, buildPayload } from '../worker/core.mjs'
+import { parseStates, createDebouncer, buildPayload, repoNameFromGit } from '../worker/core.mjs'
 
 test('parseStates defaults when empty or invalid', () => {
   assert.deepEqual([...parseStates('')].sort(), ['blocked', 'done', 'waiting'])
@@ -40,4 +40,13 @@ test('buildPayload shape', () => {
   assert.equal(p.branch, null)
   assert.equal(p.text, 'wt: done (success)')
   assert.equal(buildPayload({ state: 'waiting', title: 'fix login' }, {}).text, 'Orca: waiting - fix login')
+  assert.equal(buildPayload({ state: 'done' }, { repo: 'shop', worktree: 'main' }).text, 'shop/main: done')
+})
+
+test('repoNameFromGit reads the main worktree folder from .git', () => {
+  assert.equal(repoNameFromGit('D:/work/shop', null), 'shop')
+  assert.equal(repoNameFromGit('D:/wt/feat', 'gitdir: D:/work/shop/.git/worktrees/feat\n'), 'shop')
+  assert.equal(repoNameFromGit('/srv/wt/feat', 'gitdir: /srv/shop.git/worktrees/feat'), 'shop')
+  assert.equal(repoNameFromGit('/work/shop-wt/feat', 'gitdir: ../../shop/.git/worktrees/feat'), 'shop')
+  assert.equal(repoNameFromGit('/x', 'not a git file'), null)
 })

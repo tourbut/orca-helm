@@ -1,6 +1,8 @@
+import fs from 'node:fs'
 import os from 'node:os'
+import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { parseStates, createDebouncer, buildPayload } from './core.mjs'
+import { parseStates, createDebouncer, buildPayload, repoNameFromGit } from './core.mjs'
 
 const SECRET_KEY = 'authValue'
 const FETCH_MS = 10_000
@@ -63,6 +65,24 @@ async function lookupWorkspace(orca, workspaceId) {
   }
 }
 
+/** The repo's folder name from the worktree's `.git`; null when the path is not readable here (remote, removed). */
+function repoOf(worktreePath) {
+  if (!worktreePath) return null
+  try {
+    const dotGit = path.join(worktreePath, '.git')
+    return repoNameFromGit(worktreePath, fs.statSync(dotGit).isDirectory() ? null : fs.readFileSync(dotGit, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+/** Name, branch, path and repo of the event's worktree. A local worktree's id is `<repoId>::<path>`. */
+async function workspaceInfo(orca, workspaceId) {
+  const ws = await lookupWorkspace(orca, workspaceId)
+  const worktreePath = ws?.path || String(workspaceId ?? '').split('::')[1] || null
+  return { name: ws?.name ?? null, branch: ws?.branch ?? null, path: worktreePath, repo: repoOf(worktreePath) }
+}
+
 async function post(url, body, auth) {
   const headers = { 'Content-Type': 'application/json' }
   if (auth) headers.Authorization = auth
@@ -121,13 +141,8 @@ export default async function activate(orca) {
       }
       warnedNoUrl = false
 
-      const workspace = await lookupWorkspace(orca, event.workspaceId)
-      const payload = buildPayload(event, {
-        worktree: workspace?.name ?? null,
-        branch: workspace?.branch ?? null,
-        repo: null,
-        host: os.hostname(),
-      })
+      const info = await workspaceInfo(orca, event.workspaceId)
+      const payload = buildPayload(event, { worktree: info.name, branch: info.branch, repo: info.repo, host: os.hostname() })
 
       let auth = null
       try {
