@@ -1,0 +1,71 @@
+{
+  "manifestVersion": 2,
+  "execution": "trusted-worker",
+  "id": "grokbot-notify",
+  "name": "Grok Bot Notify",
+  "version": "0.1.0",
+  "description": "Forwards Orca agent status changes to a webhook. Built for Grok Bot webhook routines; works with any HTTP endpoint.",
+  "license": "MIT",
+  "repository": "https://github.com/tourbut/orca-grokbot",
+  "author": {
+    "name": "tourbut"
+  },
+  "engines": {
+    "orca": ">=1.4.246"
+  },
+  "pluginApi": 1,
+  "main": "worker/main.mjs",
+  "contributes": {
+    "events": [
+      {
+        "on": "agent.status.changed"
+      }
+    ],
+    "settings": [
+      {
+        "key": "webhookUrl",
+        "title": "Webhook URL",
+        "description": "HTTP(S) endpoint that receives agent status POSTs.",
+        "type": "string",
+        "default": "",
+        "placeholder": "https://..."
+      },
+      {
+        "key": "states",
+        "title": "States",
+        "description": "comma-separated states to forward",
+        "type": "string",
+        "default": "done,waiting,blocked"
+      },
+      {
+        "key": "debounceSeconds",
+        "title": "Debounce seconds",
+        "description": "Minimum seconds between identical state POSTs for the same terminal or pane.",
+        "type": "integer",
+        "default": 30,
+        "minimum": 0
+      },
+      {
+        "key": "authValue",
+        "title": "Authorization value",
+        "description": "paste the Authorization header value here once; the worker moves it into encrypted secrets and clears this field",
+        "type": "string",
+        "default": ""
+      }
+    ]
+  },
+  "capabilities": [
+    {
+      "kind": "agent:read"
+    },
+    {
+      "kind": "workspace:read"
+    },
+    {
+      "kind": "settings:own"
+    },
+    {
+      "kind": "secrets:own"
+    }
+  ]
+}
