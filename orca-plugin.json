@@ -4,7 +4,7 @@
   "id": "grokbot-notify",
   "name": "Grok Bot Notify",
   "version": "0.2.0",
-  "description": "Forwards Orca agent status changes to a webhook. Built for Grok Bot webhook routines; works with any HTTP endpoint.",
+  "description": "Hands Orca's agent alerts (done, waiting, blocked) from Orca's agent.status.changed hook to Grok Bot. The alert half of orca-helm.",
   "license": "MIT",
   "repository": "https://github.com/tourbut/orca-helm",
   "author": {
@@ -24,8 +24,8 @@
     "settings": [
       {
         "key": "webhookUrl",
-        "title": "Webhook URL",
-        "description": "HTTP(S) endpoint that receives agent status POSTs.",
+        "title": "Grok Bot routine URL",
+        "description": "The routine's URL from the Grok Bot routine screen. Orca alerts are POSTed here.",
         "type": "string",
         "default": "",
         "placeholder": "https://..."
@@ -33,14 +33,14 @@
       {
         "key": "states",
         "title": "States",
-        "description": "comma-separated states to forward",
+        "description": "Comma-separated agent states to hand to Grok Bot: done, waiting, blocked, working.",
         "type": "string",
         "default": "done,waiting,blocked"
       },
       {
         "key": "debounceSeconds",
         "title": "Debounce seconds",
-        "description": "Minimum seconds between identical state POSTs for the same terminal or pane.",
+        "description": "Seconds to hold back the same state again for the same terminal. A state change in between resets it.",
         "type": "integer",
         "default": 30,
         "minimum": 0
@@ -48,7 +48,7 @@
       {
         "key": "authValue",
         "title": "Authorization value",
-        "description": "paste the Authorization header value here once; the worker moves it into encrypted secrets and clears this field",
+        "description": "The Authorization value from the Grok Bot routine screen. Paste it once; the worker moves it into encrypted secrets and clears this field.",
         "type": "string",
         "default": ""
       }

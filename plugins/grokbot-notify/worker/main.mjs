@@ -24,7 +24,7 @@ function errText(err) {
 }
 
 // Secrets and settings writes go through the documented host methods (Host API 1.0).
-// Never log or throw the auth value or the webhook URL: either can carry the routine's token.
+// Never log or throw the auth value or the routine URL: either can carry the routine's token.
 async function setAuthSecret(orca, value) {
   const cleaned = stripAuthPrefix(value)
   if (!cleaned) throw new Error('empty auth value')
@@ -82,12 +82,12 @@ async function deliver(orca, url, payload, auth) {
   const attempt = () => post(url, body, auth).catch((err) => (err instanceof Error ? err : new Error(String(err))))
   let result = await attempt()
   if (shouldRetry(result)) {
-    orca.log(`webhook ${result instanceof Error ? `failed: ${errText(result)}` : `responded ${result}`}; retrying once`)
+    orca.log(`Grok Bot routine ${result instanceof Error ? `failed: ${errText(result)}` : `responded ${result}`}; retrying once`)
     await delay(RETRY_MS)
     result = await attempt()
   }
   if (result instanceof Error) throw result
-  if (result < 200 || result >= 300) orca.log(`webhook responded ${result}`)
+  if (result < 200 || result >= 300) orca.log(`Grok Bot routine responded ${result}`)
   return result
 }
 
@@ -114,7 +114,7 @@ export default async function activate(orca) {
       const url = String((await orca.settings.get('webhookUrl')) ?? '').trim()
       if (!isHttpUrl(url)) {
         if (!warnedNoUrl) {
-          orca.log('webhookUrl is empty or not http(s); skipping')
+          orca.log('Grok Bot routine URL (webhookUrl) is empty or not http(s); skipping')
           warnedNoUrl = true
         }
         return { status: null }
