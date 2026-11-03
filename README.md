@@ -41,24 +41,24 @@ Windows에서는 `orca.cmd`(cmd.exe 래퍼) 대신 같은 폴더의 `orca.exe` �
 .\orca-helm.ps1 start fullops --name fix-x --agent claude --file C:\tmp\p.txt
 .\orca-helm.ps1 read jevpet --lines 40
 .\orca-helm.ps1 wait jevpet --timeout 600
-.\orca-helm.ps1 raw -- terminal list --json
+.\orca-helm.ps1 raw worktree ps --json
 ```
 
 기본 출력은 짧은 텍스트입니다. `--json` 은 JSON 한 줄입니다.
 
 | 명령 | 동작 |
 | --- | --- |
-| `status [query] [--all]` | 터미널 한 줄 요약. waiting, working, 그 다음 순. `--all` 은 archived 포함 |
+| `status [query] [--all]` | 터미널 한 줄 요약. waiting, working, done, shell, idle 순. `--all` 은 archived 포함 |
 | `find <query>` | 상위 10개. `worktreeId`, `repoId`, handle 포함 |
 | `read <target> [--lines 40] [--screen]` | handle 또는 이름. 마지막 N줄 |
 | `send <target> (--file \| --text) [--no-enter] [--interrupt]` | 기본은 Enter까지 전송. handle이 정확히 같으면 그 터미널. 아니면 이름 검색. worktree에 터미널이 여러 개면 에이전트가 있는 쪽 |
 | `start <repo> --name <name> [--agent claude\|codex] (--file \| --text)` | `repo list` 로 repo를 고르고 `worktree create` |
-| `wait <target> [--timeout 600] [--interval 5] [--for agent\|tui-idle\|exit] [--fresh 60]` | 기본 `agent`: working을 본 뒤 waiting/done/idle이 되거나, 최근 `--fresh` 초 안에 바뀐 waiting/done이면 끝. 이전 턴의 오래된 done은 무시합니다. `tui-idle` / `exit` 는 `orca terminal wait`. 초 단위 |
-| `raw -- <args>` | 같은 바이너리로 `orca` 에 그대로 전달 |
+| `wait <target> [--timeout 600] [--interval 5] [--for agent\|tui-idle\|exit] [--fresh 60]` | 기본 `agent`: working을 본 뒤 waiting/done/idle/shell이 되거나, 최근 `--fresh` 초 안에 바뀐 waiting/done이면 끝. `shell` 은 `idle` 과 같이 fresh만으로는 끝나지 않습니다. 이전 턴의 오래된 done은 무시합니다. `tui-idle` / `exit` 는 `orca terminal wait`. 초 단위 |
+| `raw [--] <args>` | 같은 바이너리로 `orca` 에 그대로 전달. `--` 는 없어도 됩니다 |
 
 `status` 한 줄 예: `fullops/main  t:<handle>  waiting  claude  "title"  12m`
 
-텍스트의 상태 칸은 `working` / `waiting` / `done` / `idle` / `unknown` 입니다. `permission` 과 `blocked` 는 `waiting` 으로 모읍니다. `--json` 의 `state` 는 Orca가 준 원래 값입니다.
+텍스트의 상태 칸은 `working` / `waiting` / `done` / `shell` / `idle` / `unknown` 입니다. `permission` 과 `blocked` 는 `waiting`, worktree `active` 와 `inactive` 는 `idle` 입니다. 터미널만 있고 에이전트가 없으면 `shell` 입니다. 같은 `repo/worktree` 가 여러 worktree면 `~` 와 짧은 경로 조각으로 구분합니다 (`jevpet/jevpet~982c69f1`). `--json` 의 `state` 는 에이전트가 있으면 Orca가 준 원래 값이고, 없는 터미널은 `shell` 입니다.
 
 ## 종료 코드
 

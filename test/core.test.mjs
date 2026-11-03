@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildRows, classifyState, fuzzyScore, parseArgs, tailLines, unwrap } from '../lib/core.mjs'
+import { buildRows, classifyState, findMatches, fuzzyScore, parseArgs, sortRows, tailLines, unwrap } from '../lib/core.mjs'
 
 test('unwrap prefers an RPC result and passes plain objects through', () => {
   assert.deepEqual(unwrap({ ok: true, id: 1, result: { repos: [] } }), { repos: [] })
@@ -101,7 +101,7 @@ test('buildRows joins a terminal to its agent by paneKey', () => {
   assert.equal(joined.since, 1_700_000_000_000)
   assert.equal(joined.preview.length, 80)
   const shell = rows.find((row) => row.handle === 'h2')
-  assert.equal(shell.state, 'working')
+  assert.equal(shell.state, 'shell')
   assert.equal(shell.agent, null)
   assert.equal(shell.title, 'shell')
   const empty = rows.find((row) => row.worktreeId === 'wt3')
@@ -117,10 +117,116 @@ test('classifyState buckets permission and blocked with waiting', () => {
   assert.equal(classifyState('blocked'), 'waiting')
   assert.equal(classifyState('waiting'), 'waiting')
   assert.equal(classifyState('done'), 'done')
+  assert.equal(classifyState('shell'), 'shell')
   assert.equal(classifyState('idle'), 'idle')
   assert.equal(classifyState('inactive'), 'idle')
+  assert.equal(classifyState('active'), 'idle')
   assert.equal(classifyState('nope'), 'unknown')
   assert.equal(classifyState(null), 'unknown')
+})
+
+test('bare terminals are shell and shared labels stay distinct', () => {
+  const mainId = '79710d8d::D:/workspace/jevpet'
+  const aId = '79710d8d::D:/workspace/jevpet-worktrees/.fullops-review-982c69f16a5644fd82b7c207379ecd72'
+  const bId = '79710d8d::D:/workspace/jevpet-worktrees/.fullops-review-d3ec5272519e4a2ea95d13a9a86449f3'
+  const ps = {
+    worktrees: [
+      { worktreeId: mainId, repo: 'jevpet', path: 'D:/workspace/jevpet', displayName: 'main', status: 'active', agents: [] },
+      {
+        worktreeId: aId,
+        repo: 'jevpet',
+        path: 'D:/workspace/jevpet-worktrees/.fullops-review-982c69f16a5644fd82b7c207379ecd72',
+        displayName: 'jevpet',
+        branch: '',
+        status: 'inactive',
+        agents: [],
+      },
+      {
+        worktreeId: bId,
+        repo: 'jevpet',
+        path: 'D:/workspace/jevpet-worktrees/.fullops-review-d3ec5272519e4a2ea95d13a9a86449f3',
+        displayName: 'jevpet',
+        branch: '',
+        status: 'inactive',
+        agents: [],
+      },
+      {
+        worktreeId: 'wt-done',
+        repo: 'jevpet',
+        path: 'D:/workspace/done',
+        displayName: 'done',
+        status: 'active',
+        agents: [{ paneKey: 'tab:leaf', state: 'done', agentType: 'claude' }],
+      },
+      { worktreeId: 'id-aaaabbbb', repo: 'box', path: 'D:/wt/alpha', displayName: 'same', status: 'inactive', agents: [] },
+      { worktreeId: 'id-ccccdddd', repo: 'box', path: 'D:/wt/beta', displayName: 'same', status: 'inactive', agents: [] },
+      { worktreeId: 'xxxxAAAA1111', repo: 'box', path: 'D:/one/leaf', displayName: 'dup', status: 'inactive', agents: [] },
+      { worktreeId: 'yyyyBBBB2222', repo: 'box', path: 'D:/two/leaf', displayName: 'dup', status: 'inactive', agents: [] },
+      {
+        worktreeId: 'aa111111',
+        repo: 'box',
+        path: 'D:/r/.fullops-review-982c69f1AAAAAAAA',
+        displayName: 'long',
+        status: 'inactive',
+        agents: [],
+      },
+      {
+        worktreeId: 'bb222222',
+        repo: 'box',
+        path: 'D:/r/.fullops-review-982c69f1BBBBBBBB',
+        displayName: 'long',
+        status: 'inactive',
+        agents: [],
+      },
+    ],
+  }
+  const terminals = {
+    terminals: [
+      { handle: 'term_a24f', worktreeId: mainId, tabId: 'pty:main', leafId: 'pty:main', title: null, paneTitle: null, agentIdentity: null },
+      { handle: 'term_a24f', worktreeId: mainId, tabId: 'pty:main', leafId: 'pty:main', title: null, paneTitle: null, agentIdentity: null },
+      { handle: 'term_claude_only', worktreeId: aId, tabId: 't1', leafId: 'l1', title: null, agentIdentity: 'claude' },
+      { handle: 'term_plain', worktreeId: aId, tabId: 't2', leafId: 'l2', title: null, agentIdentity: null },
+      { handle: 'term_done', worktreeId: 'wt-done', tabId: 'tab', leafId: 'leaf', title: null, agentIdentity: 'claude' },
+    ],
+  }
+  const rows = buildRows(ps, terminals)
+  assert.equal(rows.filter((row) => row.handle === 'term_a24f').length, 1)
+  const main = rows.find((row) => row.handle === 'term_a24f')
+  assert.equal(main.state, 'shell')
+  assert.equal(main.agent, null)
+  assert.equal(main.worktree, 'main')
+
+  const claudeOnly = rows.find((row) => row.handle === 'term_claude_only')
+  const plain = rows.find((row) => row.handle === 'term_plain')
+  assert.equal(claudeOnly.state, 'shell')
+  assert.equal(claudeOnly.agent, 'claude')
+  assert.equal(claudeOnly.worktree, 'jevpet~982c69f1')
+  assert.equal(plain.worktree, claudeOnly.worktree)
+  assert.equal(plain.agent, null)
+  assert.equal(rows.find((row) => row.worktreeId === bId).worktree, 'jevpet~d3ec5272')
+
+  const done = rows.find((row) => row.handle === 'term_done')
+  assert.equal(done.state, 'done')
+  assert.equal(done.agent, 'claude')
+
+  assert.equal(rows.find((row) => row.worktreeId === 'id-aaaabbbb').worktree, 'same~alpha')
+  assert.equal(rows.find((row) => row.worktreeId === 'id-ccccdddd').worktree, 'same~beta')
+  assert.equal(rows.find((row) => row.worktreeId === 'xxxxAAAA1111').worktree, 'dup~AAAA1111')
+  assert.equal(rows.find((row) => row.worktreeId === 'yyyyBBBB2222').worktree, 'dup~BBBB2222')
+  assert.equal(rows.find((row) => row.worktreeId === 'aa111111').worktree, 'long~69f1AAAAAAAA')
+  assert.equal(rows.find((row) => row.worktreeId === 'bb222222').worktree, 'long~69f1BBBBBBBB')
+
+  const named = findMatches(rows, [], 'same').find((match) => match.row.worktreeId === 'id-aaaabbbb')
+  assert.equal(named.score, 400)
+  assert.ok(findMatches(rows, [], 'jevpet').some((match) => match.row.worktree === 'jevpet~982c69f1'))
+  assert.deepEqual(
+    sortRows([
+      { repo: 'a', worktree: 'i', state: 'idle' },
+      { repo: 'a', worktree: 's', state: 'shell' },
+      { repo: 'a', worktree: 'd', state: 'done' },
+    ]).map((row) => row.state),
+    ['done', 'shell', 'idle'],
+  )
 })
 
 test('tailLines drops ANSI and trailing blank lines', () => {
