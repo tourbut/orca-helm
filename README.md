@@ -144,7 +144,7 @@ Grok Bot은 PC 셸에서 orca-helm을 호출합니다. Windows는 `C:\tools\orca
 
 ## 플랫폼 메모
 
-**Windows.** `orca-helm.ps1` 이 기본 진입점입니다. node stdout을 UTF-8 문자열로 받은 뒤, 출력이 리다이렉트돼 있으면 원래 `[Console]::OutputEncoding`(한글 Windows는 CP949)으로 다시 씁니다. 바깥 PowerShell 5.1이 `$o = powershell -File .\orca-helm.ps1 status` 처럼 받거나 파이프로 넘겨도 한글이 유지됩니다. UTF-8 바이트가 필요하면 `ORCA_HELM_ENCODING=utf8` 을 설정합니다. stderr는 node 그대로 나가고, `wait` 출력은 끝날 때 한 번에 나옵니다. PowerShell은 `--` 를 삼키므로 `raw` 는 `--` 없이도 됩니다. `orca-helm.cmd` 는 `chcp 65001` 로 맞춘 뒤 이전 코드 페이지로 되돌리고 종료 코드를 유지합니다. `node bin\orca-helm.mjs` 를 직접 실행해도 됩니다.
+**Windows.** `orca-helm.ps1` 이 기본 진입점입니다. node stdout을 UTF-8 문자열로 받은 뒤, 출력이 리다이렉트돼 있으면 원래 `[Console]::OutputEncoding`(한글 Windows는 CP949)으로 다시 씁니다. 바깥 PowerShell 5.1이 `$o = powershell -File .\orca-helm.ps1 status` 처럼 받거나 파이프로 넘겨도 한글이 유지됩니다. 주의: stdout이 리다이렉트된 PowerShell(원격 셸 등) **안에서** `$o = .\orca-helm.ps1 ...` 이나 `.\orca-helm.ps1 ... | ConvertFrom-Json` 으로 받으면 결과가 변수·파이프로 가지 않고 바로 stdout으로 나갑니다. 그럴 때는 `$o = powershell -NoProfile -File C:\tools\orca-helm\orca-helm.ps1 status --json` 처럼 새 프로세스로 부르거나, `--out <file>` 로 쓴 뒤 `Get-Content -Encoding UTF8 <file>` 로 읽으세요. 명령을 그대로 실행해 stdout을 읽는 방식은 영향이 없습니다. UTF-8 바이트가 필요하면 `ORCA_HELM_ENCODING=utf8` 을 설정합니다. stderr는 node 그대로 나가고, `wait` 출력은 끝날 때 한 번에 나옵니다. PowerShell은 `--` 를 삼키므로 `raw` 는 `--` 없이도 됩니다. `orca-helm.cmd` 는 `chcp 65001` 로 맞춘 뒤 이전 코드 페이지로 되돌리고 종료 코드를 유지합니다. `node bin\orca-helm.mjs` 를 직접 실행해도 됩니다.
 
 Windows에서는 `orca.cmd`(cmd.exe 래퍼, 따옴표를 깨뜨림) 대신 같은 폴더의 `orca.exe` 를 실행합니다. `ORCA_HELM_BIN` 에도 `orca.exe` 경로를 쓰세요. 최신 Node는 셸 없이 `.cmd` 를 실행하지 않아 `cannot execute ...: EINVAL` 로 끝납니다.
 

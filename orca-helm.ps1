@@ -19,6 +19,8 @@ if ($redirected -and -not $forceUtf8) {
 
 if ($lines.Count -gt 0) {
   if ($redirected) {
+    # shortcut: this bypasses the pipeline, so `$o = .\orca-helm.ps1` inside a redirected host captures nothing
+    # (Write-Output here turns 5.1 -File output into UTF-8); upgrade by decoding node's stdout without [Console]::OutputEncoding.
     foreach ($line in $lines) { [Console]::Out.WriteLine($line) }
   } else {
     foreach ($line in $lines) { Write-Output $line }
