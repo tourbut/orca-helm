@@ -108,7 +108,11 @@ async function ask(name: string, input?: unknown): Promise<void> {
 function refresh(): void {
   void plugin
     .request('routes.list')
-    .then((answer) => set(state, answer as State))
+    .then((answer) => {
+      set(state, answer as State)
+      // An open form keeps its own save error; otherwise the list is current again.
+      if (!read(draft)) set(problem, null)
+    })
     .catch((err) => set(problem, message(err)))
 }
 
@@ -137,6 +141,11 @@ function tick(workspace: string, checked: boolean): void {
 
 function save(): void {
   const d = read(draft)
+  // The worker saves by name, so a new bot named like a listed one would replace it and inherit its Authorization.
+  if (d?.previousName === null && read(state)?.routes.some((r) => same(r.name, d.name.trim()))) {
+    set(problem, 'another bot already has this name')
+    return
+  }
   if (d) void ask('routes.save', { previousName: d.previousName, name: d.name, url: d.url, workspaces: d.workspaces, auth: d.auth })
 }
 
@@ -173,7 +182,7 @@ function form(d: Draft, choices: string[]) {
           <Button tone="accent" icon="check" disabled={working} onPress={save}>
             {t('save')}
           </Button>
-          <Button variant="ghost" disabled={working} onPress={() => set(draft, null)}>
+          <Button variant="ghost" disabled={working} onPress={() => (set(draft, null), set(problem, null))}>
             {t('cancel')}
           </Button>
           {d.previousName === null ? null : read(confirming) ? (
@@ -214,7 +223,7 @@ export default function Panel() {
         {t('intro')}
       </Text>
       {s === null && !read(problem) ? <Spinner label={t('loading')} /> : null}
-      {s === null && read(problem) && !d ? <Callout tone="danger">{read(problem)}</Callout> : null}
+      {read(problem) && !d ? <Callout tone="danger">{read(problem)}</Callout> : null}
       {s && s.errors.length > 0 ? (
         <Callout tone="warning" title={t('skipped')}>
           {s.errors.map((e) => `#${e.line}: ${e.reason}`).join(' · ')}
@@ -222,7 +231,8 @@ export default function Panel() {
       ) : null}
       {s && s.routes.length === 0 && !d ? <EmptyState icon="bot" title={t('empty')} description={t('emptyHint')} /> : null}
       {s ? s.routes.map((route) => (d && d.previousName !== null && same(d.previousName, route.name) ? form(d, s.workspaces) : card(route))) : null}
-      {s && d && d.previousName === null ? form(d, s.workspaces) : null}
+      {/* A new bot, or one removed elsewhere while it was being edited: the form stays, with Cancel. */}
+      {s && d && !s.routes.some((r) => d.previousName !== null && same(d.previousName, r.name)) ? form(d, s.workspaces) : null}
       {s && !d ? (
         <Button icon="add" onPress={() => open(null)}>
           {t('add')}

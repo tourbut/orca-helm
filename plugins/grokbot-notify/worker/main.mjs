@@ -4,8 +4,11 @@ import os from 'node:os'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import {
+  DECISION_VERSION,
   buildPayload,
   createDebouncer,
+  decisionPayload,
+  gitCommonDir,
   isHttpUrl,
   matchesWorkspace,
   parseRoutes,
@@ -14,8 +17,8 @@ import {
   repoNameFromGit,
   routeLine,
   routeProblem,
-  savedRouteLine,
   stripAuthPrefix,
+  text,
   upsertRouteLine,
   workspaceOptions,
 } from './core.mjs'
@@ -28,8 +31,6 @@ const SINGLE_AUTH_KEY = 'authValue'
 function errText(err) {
   return err?.message ?? String(err)
 }
-
-const text = (value) => String(value ?? '').trim()
 
 /** Secret key for a route: ASCII whatever the bot's name is (풀로, 노리, ...). */
 const routeSecretKey = (route) => `route_${createHash('sha256').update(route.key).digest('hex').slice(0, 16)}`
@@ -45,6 +46,16 @@ async function setSecret(orca, key, value) {
 async function getSecret(orca, key) {
   const result = await orca.host.call('secrets.get', { key })
   return typeof result?.value === 'string' && result.value ? result.value : null
+}
+
+/** Whether a secret is stored under `key`; a store that cannot be read counts as none. */
+async function hasSecret(orca, key) {
+  return Boolean(await getSecret(orca, key).catch(() => null))
+}
+
+/** A route's Authorization exists: still raw in its line, or `(saved)` with the secret there. */
+async function hasAuth(orca, route) {
+  return Boolean(route.auth) || (route.saved && (await hasSecret(orca, routeSecretKey(route))))
 }
 
 async function setSetting(orca, key, value) {
@@ -89,7 +100,7 @@ async function migrateAuth(orca, seen) {
     if (row.route?.auth) {
       try {
         await setSecret(orca, routeSecretKey(row.route), row.route.auth)
-        kept.push(savedRouteLine(row.route))
+        kept.push(routeLine({ ...row.route, saved: true }))
         continue
       } catch (err) {
         orca.log(`could not move the routes line ${row.number} Authorization into secrets: ${errText(err)}`)
@@ -108,12 +119,16 @@ async function migrateAuth(orca, seen) {
   }
 }
 
-/** Routes to send to. With no valid routes line, the single webhookUrl/authValue covers every workspace. */
+/**
+ * Routes to send to. With no valid routes line, the single webhookUrl/authValue covers every workspace; an authValue
+ * still in Settings (secrets unavailable) is sent as is, like a raw value in a routes line.
+ */
 function readRoutes(settings) {
   const routes = parseRoutes(settings.routes).routes.map((route) => ({ ...route, secretKey: routeSecretKey(route) }))
   if (routes.length > 0) return routes
   const url = text(settings.webhookUrl)
-  return isHttpUrl(url) ? [{ key: '', name: null, workspaces: [], url, saved: true, auth: null, secretKey: SINGLE_AUTH_KEY }] : []
+  const auth = stripAuthPrefix(settings[SINGLE_AUTH_KEY]) || null
+  return isHttpUrl(url) ? [{ key: '', name: null, workspaces: [], url, saved: true, auth, secretKey: SINGLE_AUTH_KEY }] : []
 }
 
 /** A raw value still in the line (secrets unavailable), else the stored secret for `(saved)`, else none. */
@@ -128,14 +143,14 @@ async function authFor(orca, route) {
   }
 }
 
-/** Name and branch of the event's worktree from every workspace, not only the focused one. */
-async function lookupWorkspace(orca, workspaceId) {
+/** Every workspace, not only the focused one; [] when the host cannot list them. */
+async function listWorkspaces(orca) {
   try {
-    if (!workspaceId || !orca.host?.has?.('workspace.list')) return null
+    if (!orca.host?.has?.('workspace.list')) return []
     const { workspaces } = await orca.host.call('workspace.list', {})
-    return (workspaces ?? []).find((ws) => ws.id === workspaceId) ?? null
+    return (workspaces ?? []).filter(Boolean)
   } catch {
-    return null
+    return []
   }
 }
 
@@ -143,27 +158,60 @@ async function lookupWorkspace(orca, workspaceId) {
 function repoOf(worktreePath) {
   if (!worktreePath) return null
   try {
-    const dotGit = path.join(worktreePath, '.git')
-    return repoNameFromGit(worktreePath, fs.statSync(dotGit).isDirectory() ? null : fs.readFileSync(dotGit, 'utf8'))
+    return repoNameFromGit(worktreePath, gitFileOf(worktreePath))
   } catch {
     return null
   }
 }
 
+/** The `.git` file's text, or null when `.git` is a directory (a main worktree). Throws when there is no `.git`. */
+const gitFileOf = (worktreePath) => {
+  const dotGit = path.join(worktreePath, '.git')
+  return fs.statSync(dotGit).isDirectory() ? null : fs.readFileSync(dotGit, 'utf8')
+}
+
+const isFullOps = (worktreePath) => Boolean(worktreePath) && fs.existsSync(path.join(worktreePath, '.fullops-squad', 'fullops.json'))
+
+/**
+ * Open FullOps decisions of a bot-started task (`origin: bot`), from the repo's Git common directory. Decisions
+ * asked in the Orca coordinator chat (`origin: user`) are asked there first, so they are not sent.
+ */
+function botDecisions(orca, worktreePath, warned) {
+  const common = gitCommonDir(worktreePath, gitFileOf(worktreePath))
+  const dir = path.join(common, 'fullops-decisions')
+  let names = []
+  try {
+    names = fs.readdirSync(dir).filter((name) => /^D\d+\.json$/.test(name))
+  } catch {
+    return { common, decisions: [] }
+  }
+  const decisions = []
+  for (const name of names) {
+    let item
+    try {
+      item = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'))
+    } catch {
+      continue // FullOps writes a record in one go; a half-written one is read at the next alert
+    }
+    if (item?.status !== 'open' || item.origin !== 'bot') continue
+    if ((item.version ?? 1) !== DECISION_VERSION) {
+      if (!warned.has(`${common}#${item.id}`)) orca.log(`FullOps decision ${item.id} is format version ${item.version}; update grokbot-notify to send it`)
+      warned.add(`${common}#${item.id}`)
+      continue
+    }
+    decisions.push(item)
+  }
+  return { common, decisions }
+}
+
 /** Every workspace's repo name (or its own name) for the panel's checkboxes. */
 async function listWorkspaceOptions(orca) {
-  try {
-    if (!orca.host?.has?.('workspace.list')) return []
-    const { workspaces } = await orca.host.call('workspace.list', {})
-    return workspaceOptions((workspaces ?? []).map((ws) => ({ name: ws.name, repo: repoOf(ws.path) })))
-  } catch {
-    return []
-  }
+  return workspaceOptions((await listWorkspaces(orca)).map((ws) => ({ name: ws.name, repo: repoOf(ws.path) })))
 }
 
 /** Name, branch, path and repo of the event's worktree. A local worktree's id is `<repoId>::<path>`. */
 async function workspaceInfo(orca, workspaceId) {
-  const ws = await lookupWorkspace(orca, workspaceId)
+  const ws = workspaceId ? (await listWorkspaces(orca)).find((w) => w.id === workspaceId) : null
   const worktreePath = ws?.path || String(workspaceId ?? '').split('::')[1] || null
   return { name: ws?.name ?? null, branch: ws?.branch ?? null, path: worktreePath, repo: repoOf(worktreePath) }
 }
@@ -181,6 +229,9 @@ function shouldRetry(result) {
   return result === 429 || result >= 500
 }
 
+// fetch's own messages can quote the URL's credentials or the Authorization header, so log only the kind.
+const failure = (err) => err.cause?.code ?? err.name
+
 /** POST once, and once more after RETRY_MS for a failed connection, 429 or 5xx. Logs name the bot, never its URL. */
 async function deliver(orca, route, payload, auth) {
   const who = `Grok Bot routine${route.name ? ` ${route.name}` : ''}`
@@ -188,12 +239,12 @@ async function deliver(orca, route, payload, auth) {
   const attempt = () => post(route.url, body, auth).catch((err) => (err instanceof Error ? err : new Error(String(err))))
   let result = await attempt()
   if (shouldRetry(result)) {
-    orca.log(`${who} ${result instanceof Error ? `failed: ${errText(result)}` : `responded ${result}`}; retrying once`)
+    orca.log(`${who} ${result instanceof Error ? `failed: ${failure(result)}` : `responded ${result}`}; retrying once`)
     await delay(RETRY_MS)
     result = await attempt()
   }
   if (result instanceof Error) {
-    orca.log(`${who} failed: ${errText(result)}`)
+    orca.log(`${who} failed: ${failure(result)}`)
     return null
   }
   if (result < 200 || result >= 300) orca.log(`${who} responded ${result}`)
@@ -231,18 +282,18 @@ export default async function activate(orca) {
       warnedNoUrl = false
 
       // Outside every route's workspaces nothing happens: no repeat bookkeeping, no POST.
-      const needInfo = test || routes.some((route) => route.workspaces.length > 0)
+      const needInfo = routes.some((route) => route.workspaces.length > 0)
       const info = needInfo ? await workspaceInfo(orca, event.workspaceId) : null
       const matched = test ? routes : routes.filter((route) => matchesWorkspace(route.workspaces, info ?? {}))
       if (matched.length === 0) return { status: null, routes: [] }
 
-      const seconds = Number(settings.debounceSeconds ?? 30)
-      const windowMs = Math.max(0, Number.isFinite(seconds) ? seconds : 30) * 1000
+      const minutes = Number(settings.remindMinutes ?? 30)
+      const remindMs = Math.max(0, Number.isFinite(minutes) ? minutes : 30) * 60_000
       const terminal = event.terminalId ?? event.paneKey
       const now = Date.now()
       // Every state is remembered per route, so done -> working -> done sends the second done.
-      const fresh = matched.filter((route) => debouncerFor(route.key)(terminal, event.state, now, windowMs))
-      if (!parseStates(settings.states).has(event.state)) return { status: null, routes: [] }
+      const fresh = matched.filter((route) => debouncerFor(route.key)(terminal, event.state, now, remindMs))
+      if (!test && !parseStates(settings.states).has(event.state)) return { status: null, routes: [] }
       const due = test ? matched : fresh
       if (due.length === 0) return { status: null, routes: [] }
 
@@ -256,7 +307,10 @@ export default async function activate(orca) {
             route: route.name,
             host: os.hostname(),
           })
-          return { route: route.name, status: await deliver(orca, route, payload, await authFor(orca, route)) }
+          const status = await deliver(orca, route, payload, await authFor(orca, route))
+          // An alert that did not get through was not sent: the next report of this state tries again.
+          if (!test && !(status >= 200 && status < 300)) debouncerFor(route.key).forget(terminal, event.state)
+          return { route: route.name, status }
         })
       )
       return { status: results[0].status, routes: results }
@@ -266,7 +320,50 @@ export default async function activate(orca) {
     }
   }
 
-  orca.events.on('agent.status.changed', (event) => forward(event))
+  /** FullOps decisions already delivered per route, as `<git common dir>#<id>`; version warnings given. */
+  const announced = new Map()
+  const warned = new Set()
+
+  /**
+   * Issue #2: each open FullOps decision of a bot-started task goes once to every route whose workspaces match. The
+   * records are read when Orca reports an agent of that repo, so nothing polls. A failed delivery is tried again.
+   */
+  async function forwardDecisions(event) {
+    try {
+      // A local worktree's id is `<repoId>::<path>`: skip the host call for repos without FullOps.
+      const idPath = String(event.workspaceId ?? '').split('::')[1]
+      if (idPath && !isFullOps(idPath)) return []
+      const info = await workspaceInfo(orca, event.workspaceId)
+      if (!isFullOps(info.path)) return []
+      const { common, decisions } = botDecisions(orca, info.path, warned)
+      const open = new Set(decisions.map((item) => `${common}#${item.id}`))
+      const routes = readRoutes(await readSettings(orca)).filter((route) => matchesWorkspace(route.workspaces, info))
+      const results = []
+      for (const route of routes) {
+        const sent = announced.get(route.key) ?? announced.set(route.key, new Set()).get(route.key)
+        for (const key of sent) if (key.startsWith(`${common}#`) && !open.has(key)) sent.delete(key) // closed since
+        for (const item of decisions) {
+          const key = `${common}#${item.id}`
+          if (sent.has(key)) continue
+          sent.add(key)
+          const payload = decisionPayload(item, { repo: info.repo, worktree: info.name, branch: info.branch, route: route.name, host: os.hostname() })
+          const status = await deliver(orca, route, payload, await authFor(orca, route))
+          if (!(status >= 200 && status < 300)) sent.delete(key)
+          results.push({ route: route.name, decision: item.id, status })
+        }
+      }
+      return results
+    } catch (err) {
+      orca.log(`FullOps decision forward failed: ${errText(err)}`)
+      return []
+    }
+  }
+
+  orca.events.on('agent.status.changed', async (event) => {
+    const result = await forward(event)
+    await forwardDecisions(event)
+    return result
+  })
 
   if (orca.panels?.handle) {
     /** What the Grok Bot panel draws. Authorization values never leave the worker: only hasAuth. */
@@ -276,15 +373,8 @@ export default async function activate(orca) {
       const parsed = parseRoutes(settings.routes)
       const routes = []
       for (const route of parsed.routes) {
-        let hasAuth = Boolean(route.auth)
-        if (!hasAuth && route.saved) {
-          try {
-            hasAuth = Boolean(await getSecret(orca, routeSecretKey(route)))
-          } catch {
-            hasAuth = false
-          }
-        }
-        routes.push({ name: route.name, url: route.url, workspaces: route.workspacesText.split(',').map(text).filter(Boolean), hasAuth })
+        const workspaces = route.workspacesText.split(',').map(text).filter(Boolean)
+        routes.push({ name: route.name, url: route.url, workspaces, hasAuth: await hasAuth(orca, route) })
       }
       return { routes, workspaces: await listWorkspaceOptions(orca), errors: parsed.errors }
     }
@@ -301,22 +391,19 @@ export default async function activate(orca) {
       const problem = routeProblem(route)
       if (problem) throw new Error(problem)
       const settings = await readSettings(orca)
+      const routes = parseRoutes(settings.routes).routes
       const key = route.name.toLowerCase()
       const previousKey = text(input.previousName).toLowerCase() || key
-      const taken = parseRoutes(settings.routes).routes.some((other) => other.key === key && other.key !== previousKey)
-      if (taken) throw new Error('another bot already has this name')
+      if (routes.some((other) => other.key === key && other.key !== previousKey)) throw new Error('another bot already has this name')
 
-      const secretKey = routeSecretKey({ key })
-      const previousSecret = routeSecretKey({ key: previousKey })
-      const auth = stripAuthPrefix(input.auth)
-      if (auth) await setSecret(orca, secretKey, auth)
-      else if (previousKey !== key) {
-        const kept = await getSecret(orca, previousSecret).catch(() => null)
-        if (kept) await setSecret(orca, secretKey, kept)
-      }
-      const saved = Boolean(auth) || Boolean(await getSecret(orca, secretKey).catch(() => null))
-      await setSetting(orca, 'routes', upsertRouteLine(settings.routes, [previousKey, key], routeLine({ ...route, saved })))
-      if (previousKey !== key) await orca.host.call('secrets.delete', { key: previousSecret }).catch(() => {})
+      // The edited line's own Authorization (raw in the line, or the stored one for `(saved)`). A store that cannot
+      // be read or written fails the save before anything is written, so no value is dropped or deleted.
+      const previous = routes.find((other) => other.key === previousKey)
+      const auth = stripAuthPrefix(input.auth) || previous?.auth || (previous?.saved ? await getSecret(orca, routeSecretKey(previous)) : null)
+      if (auth) await setSecret(orca, routeSecretKey({ key }), auth)
+      const line = routeLine({ ...route, workspacesText: route.workspaces.join(','), saved: Boolean(auth) })
+      await setSetting(orca, 'routes', upsertRouteLine(settings.routes, [previousKey, key], line))
+      if (previousKey !== key) await orca.host.call('secrets.delete', { key: routeSecretKey({ key: previousKey }) }).catch(() => {})
       return panelState()
     })
 
@@ -361,18 +448,10 @@ export default async function activate(orca) {
 
     orca.panels.handle('auth.status', async () => {
       const settings = await readSettings(orca)
-      const hasSecret = async (key) => {
-        try {
-          return Boolean(await getSecret(orca, key))
-        } catch {
-          return false
-        }
-      }
       const parsed = parseRoutes(settings.routes)
       const routes = []
       for (const route of parsed.routes) {
-        const hasAuth = Boolean(route.auth) || (route.saved && (await hasSecret(routeSecretKey(route))))
-        routes.push({ name: route.name, workspaces: route.workspacesText, hasAuth })
+        routes.push({ name: route.name, workspaces: route.workspacesText, hasAuth: await hasAuth(orca, route) })
       }
       let protection = null
       try {
@@ -384,7 +463,7 @@ export default async function activate(orca) {
         protection = null
       }
       return {
-        hasAuth: await hasSecret(SINGLE_AUTH_KEY),
+        hasAuth: await hasSecret(orca, SINGLE_AUTH_KEY),
         hasUrl: isHttpUrl(text(settings.webhookUrl)),
         protection,
         routes,

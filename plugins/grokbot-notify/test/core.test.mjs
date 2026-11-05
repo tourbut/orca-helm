@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseStates, createDebouncer, buildPayload, repoNameFromGit, parseWorkspaces, matchesWorkspace, parseRoutes, savedRouteLine, upsertRouteLine, removeRouteLines, routeProblem, workspaceOptions } from '../worker/core.mjs'
+import path from 'node:path'
+import { parseStates, createDebouncer, buildPayload, repoNameFromGit, gitCommonDir, parseWorkspaces, matchesWorkspace, parseRoutes, routeLine, upsertRouteLine, removeRouteLines, routeProblem, workspaceOptions } from '../worker/core.mjs'
 
 test('parseStates defaults when empty or invalid', () => {
   assert.deepEqual([...parseStates('')].sort(), ['blocked', 'done', 'waiting'])
@@ -8,12 +9,28 @@ test('parseStates defaults when empty or invalid', () => {
   assert.ok(parseStates('working').has('working'))
 })
 
-test('debouncer suppresses same state, allows different state and expiry', () => {
+test('debouncer sends a state only when it changes, plus one reminder once it has lasted remindMs', () => {
+  const MIN = 60_000
+  const remind = 30 * MIN
   const shouldSend = createDebouncer()
-  assert.equal(shouldSend('k', 'done', 1000, 30_000), true)
-  assert.equal(shouldSend('k', 'done', 2000, 30_000), false)
-  assert.equal(shouldSend('k', 'waiting', 3000, 30_000), true)
-  assert.equal(shouldSend('k', 'waiting', 40_000, 30_000), true)
+  // Issue #1: the same waiting every 30-60 s for five minutes goes out once.
+  assert.equal(shouldSend('t1', 'waiting', 0, remind), true)
+  for (let at = 30_000; at <= 5 * MIN; at += 45_000) assert.equal(shouldSend('t1', 'waiting', at, remind), false)
+  assert.equal(shouldSend('t1', 'waiting', 31 * MIN, remind), true)
+  assert.equal(shouldSend('t1', 'waiting', 90 * MIN, remind), false)
+  // Any change counts, so done -> working -> done sends the second done.
+  assert.equal(shouldSend('t1', 'done', 91 * MIN, remind), true)
+  assert.equal(shouldSend('t1', 'working', 92 * MIN, remind), true)
+  assert.equal(shouldSend('t1', 'done', 93 * MIN, remind), true)
+  // Terminals are independent, and 0 never reminds.
+  assert.equal(shouldSend('t2', 'done', 93 * MIN, 0), true)
+  assert.equal(shouldSend('t2', 'done', 999 * MIN, 0), false)
+
+  // Past 200 terminals the one whose state changed longest ago is forgotten.
+  const many = createDebouncer()
+  for (let i = 0; i <= 200; i++) many(`t${i}`, 'done', i, 0)
+  assert.equal(many('t0', 'done', 300, 0), true)
+  assert.equal(many('t200', 'done', 300, 0), false)
 })
 
 test('buildPayload shape', () => {
@@ -49,6 +66,9 @@ test('repoNameFromGit reads the main worktree folder from .git', () => {
   assert.equal(repoNameFromGit('/srv/wt/feat', 'gitdir: /srv/shop.git/worktrees/feat'), 'shop')
   assert.equal(repoNameFromGit('/work/shop-wt/feat', 'gitdir: ../../shop/.git/worktrees/feat'), 'shop')
   assert.equal(repoNameFromGit('/x', 'not a git file'), null)
+  // FullOps keeps its records in the common directory.
+  assert.equal(gitCommonDir('/srv/wt/feat', 'gitdir: /srv/shop.git/worktrees/feat'), path.resolve('/srv/shop.git'))
+  assert.equal(gitCommonDir('/work/shop', null), path.resolve('/work/shop/.git'))
 })
 
 test('route workspaces match repo, workspace name or a path part, ignoring case', () => {
@@ -75,7 +95,7 @@ test('parseRoutes reads one bot per line and keeps the last line for a name', ()
   assert.equal(rows.some((row) => row.number === 2), false)
   const first = parseRoutes('풀로 | a | https://x/1 | Authorization: Bearer 1').routes[0]
   assert.equal(first.auth, 'Bearer 1')
-  assert.equal(savedRouteLine(first), '풀로 | a | https://x/1 | (saved)')
+  assert.equal(routeLine({ ...first, saved: true }), '풀로 | a | https://x/1 | (saved)')
 })
 
 test('panel edits: a line is replaced in place or appended, removed by name, and checked first', () => {
@@ -85,6 +105,7 @@ test('panel edits: a line is replaced in place or appended, removed by name, and
   assert.equal(upsertRouteLine('', ['c'], 'c | | https://c'), 'c | | https://c')
   assert.equal(removeRouteLines(text, 'a'), ['# bots', 'b | y | https://b'].join(NL))
   assert.equal(routeProblem({ name: 'a|b', url: 'https://a', workspaces: [] }), 'a bot name cannot contain | or a line break')
+  assert.equal(routeProblem({ name: ' #ops', url: 'https://a', workspaces: [] }), 'a bot name cannot start with #')
   assert.equal(routeProblem({ name: 'a', url: 'ftp://a', workspaces: [] }), 'enter an http(s) routine URL')
   assert.equal(routeProblem({ name: 'a', url: 'https://a', workspaces: ['x,y'] }), 'a workspace cannot contain , or |')
   assert.equal(routeProblem({ name: 'a', url: 'https://a', workspaces: ['x'] }), null)

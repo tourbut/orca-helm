@@ -3,7 +3,7 @@
   "execution": "trusted-worker",
   "id": "grokbot-notify",
   "name": "Grok Bot Notify",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Hands Orca's agent alerts (done, waiting, blocked) from Orca's agent.status.changed hook to Grok Bot. The alert half of orca-helm.",
   "license": "MIT",
   "repository": "https://github.com/tourbut/orca-helm",
@@ -43,7 +43,7 @@
       {
         "key": "webhookUrl",
         "title": "Grok Bot routine URL",
-        "description": "Only while Routes is empty: one routine URL that gets every workspace's alerts.",
+        "description": "Only while Routes has no valid line: one routine URL that gets every workspace's alerts.",
         "type": "string",
         "default": "",
         "placeholder": "https://..."
@@ -51,7 +51,7 @@
       {
         "key": "authValue",
         "title": "Authorization value",
-        "description": "Only while Routes is empty: the Authorization value for the URL above. Paste it once; the worker moves it into encrypted secrets and clears this field.",
+        "description": "Only while Routes has no valid line: the Authorization value for the URL above. Paste it once; the worker moves it into encrypted secrets and clears this field (when secrets are unavailable, it stays here and is sent as is).",
         "type": "string",
         "default": ""
       },
@@ -63,9 +63,9 @@
         "default": "done,waiting,blocked"
       },
       {
-        "key": "debounceSeconds",
-        "title": "Debounce seconds",
-        "description": "Seconds to hold back the same state again for the same terminal. A state change in between resets it.",
+        "key": "remindMinutes",
+        "title": "Reminder minutes",
+        "description": "A terminal's state is sent only when it changes. When the same state is reported again after lasting this many minutes, it is sent once more as a reminder. 0 never reminds.",
         "type": "integer",
         "default": 30,
         "minimum": 0

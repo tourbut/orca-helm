@@ -227,6 +227,8 @@ test('bare terminals are shell and shared labels stay distinct', () => {
   assert.equal(claudeOnly.worktree, 'jevpet~982c69f1')
   assert.equal(plain.worktree, claudeOnly.worktree)
   assert.equal(plain.agent, null)
+  // send presses Enter, so the tie-break must pick the agent terminal, never the plain shell.
+  assert.equal(pickTarget(rows, 'jevpet~982c69f1').row.handle, 'term_claude_only')
   assert.equal(rows.find((row) => row.worktreeId === bId).worktree, 'jevpet~d3ec5272')
 
   const done = rows.find((row) => row.handle === 'term_done')
@@ -259,6 +261,38 @@ test('bare terminals are shell and shared labels stay distinct', () => {
     ]).map((row) => row.state),
     ['done', 'shell', 'idle'],
   )
+})
+
+test('a label status prints resolves in read/send/wait even with an archived worktree of the same name', () => {
+  const twin = (hex, isArchived) => ({
+    worktreeId: `r::D:/wt/.fullops-review-${hex}`,
+    repo: 'jevpet',
+    path: `D:/wt/.fullops-review-${hex}`,
+    displayName: 'jevpet',
+    isArchived,
+    agents: [],
+  })
+  const ps = { worktrees: [twin(`1752fe0c${'a'.repeat(24)}`, false), twin(`f6113ddd${'b'.repeat(24)}`, true)] }
+  const terminals = { terminals: [{ handle: 'term_live', worktreeId: ps.worktrees[0].worktreeId, tabId: 't', leafId: 'l' }] }
+  const shown = buildRows(ps, terminals)
+  assert.deepEqual(shown.map((row) => row.worktree), ['jevpet~1752fe0c'])
+  assert.equal(pickTarget(buildRows(ps, terminals, { all: true }), `jevpet/${shown[0].worktree}`).row.handle, 'term_live')
+})
+
+test('labels stay with their worktree when worktree ps lists them in another order', () => {
+  // The same folder name under two roots: base, head8, last12 and the id's last 8 characters all collide.
+  const coor = (root) => ({ worktreeId: `r::${root}/jevpet/coor`, repo: 'jevpet', path: `${root}/jevpet/coor`, displayName: 'coor', agents: [] })
+  const [a, b] = [coor('C:/Users/me/orca/workspaces'), coor('D:/orca/workspaces')]
+  const terminals = {
+    terminals: [
+      { handle: 'term_a', worktreeId: a.worktreeId, tabId: 't', leafId: 'l' },
+      { handle: 'term_b', worktreeId: b.worktreeId, tabId: 't', leafId: 'l' },
+    ],
+  }
+  const labels = (worktrees) => Object.fromEntries(buildRows({ worktrees }, terminals).map((row) => [row.handle, row.worktree]))
+  const listed = labels([a, b])
+  assert.notEqual(listed.term_a, listed.term_b)
+  assert.deepEqual(labels([b, a]), listed)
 })
 
 test('tailLines drops ANSI and trailing blank lines', () => {
@@ -378,24 +412,27 @@ test('plainLines keeps content lines: brackets, text after a box, prose, words i
   )
 })
 
-test('resolveOrcaBin honors a stub on PATH', () => {
-  if (process.platform === 'win32') return
+test('resolveOrcaBin honors a stub on PATH, or the install folder on Windows', () => {
+  const win = process.platform === 'win32'
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orca-helm-'))
   const name = process.platform === 'linux' ? 'orca-ide' : 'orca'
-  const stub = path.join(dir, name)
+  const stub = win ? path.join(dir, 'Programs', 'orca', 'resources', 'bin', 'orca.exe') : path.join(dir, name)
+  fs.mkdirSync(path.dirname(stub), { recursive: true })
   fs.writeFileSync(stub, '#!/bin/sh\nexit 0\n')
   fs.chmodSync(stub, 0o755)
-  const prevPath = process.env.PATH
-  const prevBin = process.env.ORCA_HELM_BIN
+  // Windows: PATH holds only a foreign orca.cmd, which must not stop the lookup before the install folder.
+  if (win) fs.writeFileSync(path.join(dir, 'orca.cmd'), '@echo off\r\n')
+  const prev = { PATH: process.env.PATH, ORCA_HELM_BIN: process.env.ORCA_HELM_BIN, LOCALAPPDATA: process.env.LOCALAPPDATA }
   delete process.env.ORCA_HELM_BIN
-  process.env.PATH = `${dir}${path.delimiter}${prevPath ?? ''}`
+  process.env.PATH = win ? dir : `${dir}${path.delimiter}${prev.PATH ?? ''}`
+  if (win) process.env.LOCALAPPDATA = dir
   try {
     assert.equal(resolveOrcaBin(), stub)
   } finally {
-    if (prevPath === undefined) delete process.env.PATH
-    else process.env.PATH = prevPath
-    if (prevBin === undefined) delete process.env.ORCA_HELM_BIN
-    else process.env.ORCA_HELM_BIN = prevBin
+    for (const [key, value] of Object.entries(prev)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })

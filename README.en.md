@@ -4,7 +4,7 @@ English · [한국어](README.md)
 
 **orca-helm lets Grok Bot drive the Orca IDE running on a user's PC (Windows or macOS) remotely, without fuss.** It is one set of two parts, and you need both.
 
-1. **The orca-helm CLI.** Grok Bot calls it as a shell command on the PC. One command each for checking Orca's state (`status`), finding and reading terminals (`find`, `read`), handing out work (`send`, `start`), and waiting for it to finish (`wait`).
+1. **The orca-helm CLI.** Grok Bot calls it as a shell command on the PC. One command each for checking Orca's state (`status`), finding and reading terminals (`find`, `read`), handing out work (`send`, `start`), and waiting for it to finish (`wait`), and answering FullOps decisions (`decisions`, `decide`).
 2. **The grokbot-notify plugin.** You install it in Orca. It receives Orca's own alert hook (the plugin event `agent.status.changed`) and, when an agent becomes `done`, `waiting` or `blocked`, hands that alert to Grok Bot. It has nothing to do with GitHub issue or push webhooks.
 
 Grok Bot hands out work and reads results through the CLI, and learns when to look again from the plugin's alerts. orca-helm is a dependency-free Node.js (18+, ESM) program that wraps the official `orca` CLI.
@@ -105,9 +105,10 @@ orca plugin logs local.grokbot-notify   # worker log: failed deliveries, skipped
 Grok Bot calls orca-helm from the PC's shell: `C:\tools\orca-helm\orca-helm.ps1 <command>` on Windows, `~/orca-helm/orca-helm <command>` on macOS.
 
 1. `status` shows what is running.
-2. `send <target> --file <prompt>` gives work to an existing terminal, or `start <repo> --name <name> --file <prompt>` creates a worktree with a new agent.
+2. `send <target> --file <prompt>` gives work to an existing terminal, or `start <repo> --name <name> --agent claude --file <prompt>` creates a worktree with a new agent.
 3. It gets a plugin alert (`done` / `waiting` / `blocked`), or waits with `wait <target>`.
 4. `read <target> --plain` reads the result.
+5. In a FullOps repo, `send` work to the coordinator, and answer the plugin's decision alerts (`fullops.decision`) with `decide`, then tell the coordinator.
 
 ## Commands
 
@@ -120,6 +121,8 @@ Grok Bot calls orca-helm from the PC's shell: `C:\tools\orca-helm\orca-helm.ps1 
 .\orca-helm.ps1 send jevpet --file C:\tmp\prompt.txt
 .\orca-helm.ps1 start fullops --name fix-x --agent claude --file C:\tmp\p.txt
 .\orca-helm.ps1 wait jevpet --timeout 600
+.\orca-helm.ps1 decisions
+.\orca-helm.ps1 decide orca-helm/D003 --sha <SHA> --answer go --by shin
 .\orca-helm.ps1 raw worktree ps --json
 ```
 
@@ -127,12 +130,14 @@ Output is short text by default; `--json` prints one line of JSON.
 
 | Command | What it does |
 | --- | --- |
-| `status [query] [--all]` | One line per terminal, ordered waiting, working, done, shell, idle, unknown. Archived worktrees are left out unless `--all`. `--json` prints `{"rows":[...]}` |
+| `status [query] [--all]` | One line per terminal; a worktree with no terminal gets one line with `t:-` (nothing to `read`, `send` or `wait`). Ordered waiting, working, done, shell, idle, unknown. Archived worktrees are left out unless `--all`. `--json` prints `{"rows":[...]}` |
 | `find <query>` | Top 10, archived included. Also matches repo names and paths from `repo list`. Each line ends with `worktreeId`, `repoId`, `handle`. `--json` prints `{"matches":[...]}`, each with a `score` |
 | `read <target> [--lines 40] [--screen] [--plain]` | The last N lines. `--lines 0` prints none. `--screen` passes `orca terminal read --screen`. `--plain` (alias `--strip-tui`) drops TUI borders, the input box, footers, side panels and tool lines before counting N. Content lines stay: a line with only a bracket, tables, code, diffs. `--json` prints `{"handle","status","lines","truncated"}`, plus `"plain":true` with `--plain` |
-| `send <target> (--file \| --text) [--no-enter] [--interrupt]` | Sends the text and presses Enter unless `--no-enter`. Trailing blank lines of `--file` are dropped so Enter is not pressed twice. `--interrupt` is passed as `orca terminal send --interrupt`. Prints `sent <repo>/<worktree> t:<handle>` |
-| `start <repo> --name <name> [--agent claude\|codex] (--file \| --text)` | Picks one repo from `repo list` and runs `orca worktree create --prompt`. Prints `created <name> id:<worktreeId> repo:<repoId>`, then `t:<handle>` |
+| `send <target> (--file \| --text) [--no-enter] [--interrupt] [--bypass-fullops]` | Sends the text and presses Enter unless `--no-enter`. Trailing blank lines of `--file` are dropped so Enter is not pressed twice. `--interrupt` is passed as `orca terminal send --interrupt`. The text, `--file` included, rides on orca's command line, which Windows caps at about 32,000 characters. Prints `sent <repo>/<worktree> t:<handle>` |
+| `start <repo> --name <name> --agent claude\|codex (--file \| --text) [--bypass-fullops]` | Picks one repo from `repo list` and runs `orca worktree create --agent --prompt` (Orca needs `--agent` with a prompt). Prints `created <name> id:<worktreeId> repo:<repoId>`, then `t:<handle>` when the agent runs in a terminal (that agent's Chat/CLI setting in Orca decides; a chat has nothing to `read`, `send` or `wait`) |
 | `wait <target> [--timeout 600] [--interval 5] [--for agent\|tui-idle\|exit] [--fresh 60]` | See [wait](#wait). Seconds |
+| `decisions [repo-query] [--all]` | One line per open decision of every FullOps repo (`--all` adds closed ones): `<repo>/<decision ID>  <status>  <task key>  "<question>"  [options]  sha:<SHA>  until:<expiry>  risks:<reasons>  blocks:<waiting work>  origin:<entry point>`. `--json` prints `{"decisions":[...]}` (FullOps records plus `repo` and `repoId`). See [FullOps](#fullops) |
+| `decide <[repo/]D###> --answer <answer> --by <who answered> [--sha <SHA>]` | Closes a FullOps decision. Prints `answered <repo>/<ID>: <answer>`, or `already <status> <repo>/<ID>: <earlier answer>` when it was closed already. Decision IDs are numbered per repo, so write `<repo>/D003` when several repos have that ID. `--json` prints FullOps's result plus `repo` |
 | `raw [--] <args>` | Passes the args to the same orca binary and returns its exit code. The `--` is optional |
 | `help`, `--help`, `--version` | Help and version |
 
@@ -153,14 +158,26 @@ Every command but `raw` takes one positional argument at most (the target or que
 
 A `status` line looks like `fullops/main  t:<handle>  waiting  claude  "title"  12m`.
 
-The state column is `working` / `waiting` / `done` / `shell` / `idle` / `unknown`. `permission` and `blocked` show as `waiting`; worktree `active` and `inactive` show as `idle`. A terminal with no agent is `shell`. When one `repo/worktree` label covers several worktrees, a `~` and a short path piece tell them apart (`jevpet/jevpet~982c69f1`). In `--json`, `state` is Orca's raw value when an agent is attached.
+The state column is `working` / `waiting` / `done` / `shell` / `idle` / `unknown`. `permission` and `blocked` show as `waiting`; worktree `active` and `inactive` show as `idle`. A terminal with no agent is `shell`. When one `repo/worktree` label covers several worktrees (archived ones included), a `~` and a short path piece (or an id hash) tell them apart (`jevpet/jevpet~982c69f1`). In `--json`, `state` is Orca's raw value when an agent is attached.
 
 ### wait
 
 - The target is resolved to a terminal handle once, at the start, and only that handle is polled after that. A worktree with a similar name showing up mid-wait does not change the target. A target without a terminal is an error at once; if the terminal disappears mid-wait, it exits 1 with `terminal t:<handle> (<repo>/<worktree>) is gone`.
 - `--for agent` (default): re-reads every `--interval` seconds (0 means 0.25 s). It ends once the agent turns waiting/done/idle/shell after being seen working. It also ends at once on a waiting/done that changed within the last `--fresh` seconds; an older done belongs to the previous turn and is ignored. `shell` and `idle` never end it on freshness alone. Output is a `status` line; `--json` prints `{"row":{...},"timedOut":false}`.
-- `--for tui-idle` / `--for exit`: handed to `orca terminal wait`. Output is `satisfied|timeout <repo>/<worktree> t:<handle> <mode>`; `--json` prints Orca's wait result.
+- `--for tui-idle` / `--for exit`: handed to `orca terminal wait`. Output is `satisfied|timeout <repo>/<worktree> t:<handle> <mode>`; `--json` prints Orca's wait result, or `{"satisfied":false}` on a timeout (Orca returns none then).
 - A timeout exits 2.
+
+### FullOps
+
+In a [FullOps](https://github.com/tourbut/Fullops-Squad-plugin) repo (one with `.fullops-squad/fullops.json`), work has to go through the coordinator so the route, `worker_done` and Run tracking stay intact.
+
+- `send` to a FullOps worker is refused when the text is longer than 20 characters. Prompt answers such as `y` or `1` still go through. Send work to the coordinator. A worker is told apart the way FullOps does it: a worktree whose branch is a role branch from `fullops.json` `roles`, for a role other than the coordinator's (`primary_role`, else the `- coordinator 역할:` line in `orca-agents.md`). A coordinator running in a role worktree such as `fullops/coor`, and a branch with no role, are not workers.
+- `start` in a FullOps repo is refused. Send the request to its coordinator instead.
+- Pass `--bypass-fullops` when you really mean it. Repos without FullOps are not affected.
+- `decisions` and `decide` run FullOps's `decision.py` (1.16.0 or later) with Python. orca-helm judges and checks nothing itself. `decision.py` is taken from `ORCA_HELM_FULLOPS` (the plugin folder, its `scripts` folder, or the `decision.py` path), else from the newest version in the Claude Code or Codex plugin cache (`~/.claude/plugins/cache/fullops-squad/fullops-squad/<version>`, `~/.codex/plugins/cache/...`). Python is `ORCA_HELM_PYTHON`, else `python` on Windows and `python3` elsewhere.
+- `decide` records the answer as coming through the bot (`--via bot`). `--sha` is the decision's own `sha` (the `sha:` column of `decisions`, and in the alert's `reply`); a SHA-bound decision needs it. `--by` is the identity of whoever actually answered; never pick it from `allow`, and have the coordinator's `--allow` use the same identities. When `--sha` is missing or different, the decision expired, or `--by` is not an allowed responder, FullOps refuses it and orca-helm exits 1 with that reason. A late answer to a decision already closed (for example from the Orca chat) reports `already` and exits 0.
+- FullOps does not watch decision records. After answering, tell the coordinator waiting on it (for example `orca-helm send <coordinator> --text "orca-helm/D003 answered: go"`).
+- When FullOps's `decision.py` is missing, older than 1.16.0, or a decision record has a format `version` other than 1, it exits 4.
 
 ## Exit codes
 
@@ -169,7 +186,8 @@ The state column is `working` / `waiting` / `done` / `shell` / `idle` / `unknown
 | 0 | OK |
 | 1 | Error. stderr reads `orca-helm: ...` |
 | 2 | `wait` timed out |
-| 3 | Several targets (or several repos for `start`). Candidates go to stdout |
+| 3 | Several targets (or several repos for `start`, or several repos for `decisions`/`decide`, or several repos holding the decision for `decide`). Candidates go to stdout |
+| 4 | FullOps's `decision.py` is missing or older than 1.16.0, a decision record has another format version, or Python cannot be run (`ORCA_HELM_PYTHON`) |
 
 ## Platform notes
 
@@ -181,9 +199,9 @@ On Windows orca-helm runs the `orca.exe` next to `orca.cmd` rather than the cmd.
 
 **Finding the orca binary.** `ORCA_HELM_BIN` wins when set. Otherwise:
 
-- Windows: `orca.exe` on PATH → `orca.exe` beside `orca.cmd` on PATH → `%LOCALAPPDATA%\Programs\Orca\bin\orca.exe`
+- Windows: `orca.exe` on PATH → `%LOCALAPPDATA%\Programs\orca\resources\bin\orca.exe`
 - macOS: `orca` on PATH → `~/.local/bin/orca` → `/usr/local/bin/orca` → `/opt/homebrew/bin/orca`
-- Linux: `orca-ide` on PATH → `orca` on PATH → `~/.local/bin/orca-ide` → `/usr/bin/orca-ide`
+- Linux: `orca-ide` on PATH → `~/.local/bin/orca-ide` → `/usr/bin/orca-ide` → `orca` on PATH (last, because GNOME's `/usr/bin/orca` is the screen reader)
 
 If none is found, it lists where it looked and exits 1.
 
@@ -198,9 +216,10 @@ It receives Orca's plugin alert hook `agent.status.changed` and POSTs JSON to th
 - **Routing per bot:** an alert goes once to every `Routes` line whose workspaces match. An entry matches when it equals the repo name or the Orca workspace name (case-insensitive), or appears in the worktree path. A line with an empty workspaces field matches every workspace. When no line matches, nothing happens: no network call and no repeat bookkeeping.
 - With no valid `Routes` line, the single `webhookUrl` gets every workspace, as before.
 - By default it hands over `done`, `waiting` and `blocked` only, never `working` (change this with the `states` setting).
-- Per bot, the same state for the same terminal is not sent again within `debounceSeconds` (30 by default). If another state, such as `working`, came in between, it counts as a new turn and is sent.
+- Per bot, a terminal's state is sent only when it changes. The same state reported again (Claude Code re-reports `waiting` about every minute while it waits for input) is not sent; once that state has lasted `remindMinutes` (30 by default), the next report goes out once more as a reminder. If another state, such as `working`, came in between, it counts as a new turn and is sent. An alert that did not get through does not count as sent, so the next report of that state tries again. The record lives in the worker's memory: after Orca stops an idle worker (5 minutes with no events) or the plugin reloads, the next report goes out again.
 - Per bot, a failed connection, 429 or 5xx is retried once after 2 seconds. A 10-second timeout is not retried, because Grok Bot may already have the first one. Failures show with the bot's name in `orca plugin logs local.grokbot-notify`.
 - The worktree name and branch come from `workspace.list`, and the repo name from the worktree's `.git` (the main worktree's folder name, or the main repo folder that a linked worktree's `gitdir:` points to). Each is `null` when not found.
+- **FullOps decisions:** when an agent of a FullOps repo reports, the open decisions of that repo (`fullops-decisions/D*.json` in its Git common directory) that belong to a task started through the bot (`origin: bot`) go once to every bot whose workspaces match. Decisions of tasks started in the Orca chat (`origin: user`) are asked in the coordinator chat first, so they are not sent. Nothing polls; a delivery that failed is tried again at the next alert, and an answered decision is forgotten. A record with a format version other than 1 is not sent and is logged. Like the repeat check, this record lives in the worker's memory. Worker questions (`question`), `escalation`, failed merges and autonomy judgments are not sent: the plugin cannot read Orca orchestration messages, so those reach a person only as the coordinator terminal's status alert or as a decision the coordinator opens.
 - The agent's last reply is not included: Orca's alert hook does not carry it. Read it with `orca-helm read <repo>/<worktree> --plain`.
 
 ### The JSON it sends
@@ -225,11 +244,30 @@ It receives Orca's plugin alert hook `agent.status.changed` and POSTs JSON to th
 ```
 
 - `text`: one line the routine can relay as is: `<repo>/<worktree>: <state> (<outcome>) - <title>`. `<repo>/<worktree>` is the label `orca-helm status` prints, so it works as a target as is. `Orca` when both are unknown.
-- `state`: Orca's state (`done` / `waiting` / `blocked` / `working`). `outcome`: `success`, `failure` or `null`.
+- `state`: Orca's state (`done` / `waiting` / `blocked` / `working`). `outcome`: Orca's `mainAgent.outcome` as given (`success`, `failure`, `cancellation`, `superseded`, `interruption` or `unconfirmed`), or `null`.
 - `title`: the terminal title. `terminalId` is the same handle orca-helm uses, so `orca-helm read t:<terminalId>` reads that terminal directly.
 - `worktree`, `branch`, `repo`: the worktree's name, its branch and the repo folder name, or `null`.
 - `route`: the bot this alert went to (the first field of its `Routes` line); `null` when sent through the single `webhookUrl`.
 - `receivedAt`: when Orca received the state (ISO 8601). `host`: the PC's host name.
+
+A FullOps decision alert has `event` `fullops.decision`. A terminal state alert (`agent.status.changed`, such as `done`) only says that terminal's agent stopped; it does not say a FullOps task finished. `fullops.decision` is a decision a person has to answer.
+
+```json
+{
+  "event": "fullops.decision",
+  "text": "orca-helm/D003: decision waiting - Merge the login fix? [go / hold] (risks: auth change; blocks: login merge; sha: <first 12 of SHA>; until: 2026-11-06T01:00:00+00:00)",
+  "decision": {"version": 1, "id": "D003", "status": "open", "key": "login", "question": "Merge the login fix?", "options": ["go", "hold"], "blocks": "login merge", "origin": "bot", "sha": "<40-char SHA>", "risks": ["auth change"], "allow": ["shin"], "expires_at": "2026-11-06T01:00:00+00:00"},
+  "reply": "orca-helm decide orca-helm/D003 --sha <40-char SHA> --answer <answer> --by <who>",
+  "repo": "orca-helm",
+  "worktree": "main",
+  "branch": "main",
+  "route": "풀로",
+  "host": "my-pc"
+}
+```
+
+- `decision`: the decision record as FullOps wrote it (format in FullOps's `events.md`). It holds no secrets.
+- `reply`: the command that answers it. `<answer>` is one of the options, `<who>` the identity of whoever actually answered (never picked from `allow`). Tell the coordinator after answering.
 
 ### Settings
 
@@ -238,10 +276,10 @@ They appear under the plugin in Orca **Settings**.
 | Key | Shown as | Meaning |
 | --- | --- | --- |
 | `routes` | Routes (one Grok Bot per line) | Usually written by the **Grok Bot** panel. Multiline, one bot per line: `bot name \| workspace1,workspace2 \| routine URL \| Authorization value`. After saving, the last field reads `(saved)`. See [Install step 3](#3-connect-the-grok-bot-routine) |
-| `webhookUrl` | Grok Bot routine URL | Only while `routes` is empty: one routine URL for every workspace. `auth.set`'s `url` also sets it |
-| `authValue` | Authorization value | Only while `routes` is empty: the Authorization value for that URL. Paste once; the worker moves it into secrets right away and clears the field |
+| `webhookUrl` | Grok Bot routine URL | Only while `routes` has no valid line: one routine URL for every workspace. `auth.set`'s `url` also sets it |
+| `authValue` | Authorization value | Only while `routes` has no valid line: the Authorization value for that URL. Paste once; the worker moves it into secrets right away and clears the field (when it cannot, the value stays in the field and is sent from there) |
 | `states` | States | States to hand over, comma-separated. Default `done,waiting,blocked` |
-| `debounceSeconds` | Debounce seconds | Seconds before the same state is sent again. Default `30` |
+| `remindMinutes` | Reminder minutes | Minutes an unchanged state must last before it is sent once more as a reminder; `0` never reminds. Default `30` |
 
 ### Handlers
 
@@ -250,7 +288,7 @@ The Grok Bot panel calls `routes.*` through `plugin.request`. From the command l
 | Name | Input | Result |
 | --- | --- | --- |
 | `routes.list` | none | `{"routes":[{"name","url","workspaces","hasAuth"}],"workspaces":[checkbox choices],"errors":[{"line","reason"}]}`. Never an Authorization value |
-| `routes.save` | `{"previousName"?, "name", "url", "workspaces": [...], "auth"?}` | The new `routes.list` answer. An empty `auth` keeps the saved value, and a rename moves it. A bad value fails with the reason only |
+| `routes.save` | `{"previousName"?, "name", "url", "workspaces": [...], "auth"?}` | The new `routes.list` answer. An empty `auth` keeps the saved value, and a rename moves it. A bad value fails with the reason only; so does a secret store that cannot be read or written, and nothing changes |
 | `routes.delete` | `{"name"}` | The new `routes.list` answer. Removes that bot's line and its saved Authorization |
 | `auth.set` | `{"route": "<one routes line>"}` or `{"url"?: string, "value"?: string}` | `{"ok":true}`. A `route` line is appended to `routes` and replaces an earlier line for the same name. A malformed line fails with the reason only |
 | `auth.status` | none | `{"hasAuth","hasUrl","protection","routes":[{"name","workspaces","hasAuth"}],"errors":[{"line","reason"}]}`. Never the values themselves |
@@ -258,7 +296,7 @@ The Grok Bot panel calls `routes.*` through `plugin.request`. From the command l
 
 ### Secrets
 
-- Authorization values live only in Orca's encrypted plugin secrets, one per bot, keyed by the bot name. When `protection` is `unavailable` (no OS key store, or Linux `basic_text`), storing fails, and that line keeps its value and is sent with it.
+- Authorization values live only in Orca's encrypted plugin secrets, one per bot, keyed by the bot name. When `protection` is `unavailable` (no OS key store, or Linux `basic_text`), storing fails, and that line keeps its value and is sent with it. The panel then cannot save a bot with an Authorization (Save shows the error); type the line into the Settings `Routes` box instead. A pasted `authValue` likewise stays in its field and is sent as is.
 - The worker never writes an Authorization value or a routine URL to its log or error messages, because the URL may carry a token. A malformed `routes` line is logged by line number and reason only.
 
 ### Capabilities
@@ -284,6 +322,6 @@ orca plugin check .
 
 `npm test` runs the CLI and plugin worker tests (a local HTTP stub only). `orca plugin test .` also runs `panel/routes.test.tsx`, which drives the panel and the real worker together on Orca's runtime, and `orca plugin check .` draws the panel for each scenario in `panel/routes.check.ts`. On Windows, Orca 1.4.247 fails both with `cannot import "./orca-runtime.mjs"` when the repo is on a different drive than Orca's install (C:); the official template does the same, so run them from a copy on C:.
 
-Once a tag exists, you can also install from a Git URL such as `https://github.com/tourbut/orca-helm.git#v0.4.0` in Settings → Plugins → Install plugin. The Grok Bot panel works for a plugin installed that way too; only `orca plugin dev request` does not reach it. The directory (onorca.dev/plugins) reads `orca-plugin.json` at the root of a public repo, the `orca-plugin` topic, and the latest `vX.Y.Z` tag. The release steps are in [plugins/grokbot-notify/README.md](plugins/grokbot-notify/README.md).
+Once a tag exists, you can also install from a Git URL such as `https://github.com/tourbut/orca-helm.git#v0.5.0` in Settings → Plugins → Install plugin. The Grok Bot panel works for a plugin installed that way too; only `orca plugin dev request` does not reach it. The directory (onorca.dev/plugins) reads `orca-plugin.json` at the root of a public repo, the `orca-plugin` topic, and the latest `vX.Y.Z` tag. To release: run `orca plugin validate .`, bump `version` in `orca-plugin.json` and `package.json`, commit and push, then tag that commit and push the tag (`git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z`). The repo needs the `orca-plugin` topic once: `gh repo edit tourbut/orca-helm --add-topic orca-plugin`.
 
-Status: the worker has been checked against a local HTTP stub and a mock Orca, and the Grok Bot panel with Orca's test kit (a stand-in host). It has not yet been loaded into a real Orca, with the panel opened and alerts delivered to Grok Bot end to end.
+Status: alerts have reached Grok Bot from a real Orca (see issue #1). The Grok Bot panel has been checked only with Orca's test kit (a stand-in host), not opened in a real Orca yet.

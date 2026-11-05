@@ -34,6 +34,14 @@ test('a bot is added, edited and deleted with fields and checkboxes; its Authori
     assert.ok(view.find({ text: 'Authorization 저장됨' }))
     assert.equal(JSON.stringify(view.tree()).includes('s3cret'), false)
 
+    // A new bot named like a listed one is refused: it would replace that bot and take its Authorization.
+    await view.press({ text: '봇 추가' })
+    await view.type({ label: '봇 이름' }, '풀로')
+    await view.type({ label: 'Grok Bot routine URL' }, 'https://example.invalid/other')
+    await view.press({ text: '저장' })
+    assert.equal(host.data().settings.routes, '풀로 | notes | https://example.invalid/r1 | (saved)')
+    await view.press({ text: '취소' })
+
     // Renaming keeps the saved Authorization; an empty field means "keep".
     await view.press({ text: '편집' })
     await view.type({ label: '봇 이름' }, '노리', { replace: true })

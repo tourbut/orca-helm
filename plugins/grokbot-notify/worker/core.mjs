@@ -15,31 +15,44 @@ export function parseStates(str) {
   return picked.length > 0 ? new Set(picked) : new Set(DEFAULT_STATES)
 }
 
+const MAX_TERMINALS = 200
+
+/**
+ * Repeat check per terminal: a state goes out only when it differs from the terminal's last one. The same state
+ * again is held back (agents re-report `waiting` every minute or so), except once as a reminder when it has lasted
+ * `remindMs`; 0 never reminds. Terminal ids are never reused, so a new terminal starts with no record.
+ */
 export function createDebouncer() {
-  /** @type {Map<string, { state: string, at: number }>} */
+  /** @type {Map<string, { state: string, at: number, reminded: boolean }>} */
   const last = new Map()
 
   /**
    * @param {string} key
    * @param {string} state
    * @param {number} nowMs
-   * @param {number} windowMs
+   * @param {number} remindMs
    */
-  return function shouldSend(key, state, nowMs, windowMs) {
-    if (last.size > 200) {
-      for (const [k, entry] of last) {
-        if (nowMs - entry.at > windowMs) last.delete(k)
-      }
-    }
+  function shouldSend(key, state, nowMs, remindMs) {
     const prev = last.get(key)
-    if (prev && prev.state === state && nowMs - prev.at < windowMs) {
-      return false
+    if (prev?.state === state) {
+      if (prev.reminded || !(remindMs > 0) || nowMs - prev.at < remindMs) return false
+      prev.reminded = true
+      return true
     }
-    last.set(key, { state, at: nowMs })
+    // Map order is insertion order, so the first key is the terminal whose state changed longest ago.
+    last.delete(key)
+    if (last.size >= MAX_TERMINALS) last.delete(last.keys().next().value)
+    last.set(key, { state, at: nowMs, reminded: false })
     return true
   }
+  /** A delivery of `state` failed: forget it, so the next report tries again. A newer state is kept. */
+  shouldSend.forget = (key, state) => {
+    if (last.get(key)?.state === state) last.delete(key)
+  }
+  return shouldSend
 }
 
+export const text = (value) => String(value ?? '').trim()
 const segments = (value) => String(value).replaceAll('\\', '/').split('/').filter(Boolean)
 
 /**
@@ -50,12 +63,48 @@ const segments = (value) => String(value).replaceAll('\\', '/').split('/').filte
  */
 export function repoNameFromGit(worktreePath, gitFile) {
   if (gitFile === null) return segments(worktreePath).at(-1) ?? null
+  const common = gitCommonDir(worktreePath, gitFile)
+  if (!common) return null
+  const parts = segments(common)
+  if (parts.at(-1) === '.git') return parts.at(-2) ?? null
+  return parts.at(-1)?.replace(/\.git$/, '') || null
+}
+
+/**
+ * The Git common directory (where FullOps keeps `fullops-decisions/`): `.git` itself, or for a linked worktree the
+ * directory two levels above its `gitdir:` (`<common>/worktrees/<name>`). Same arguments as repoNameFromGit.
+ */
+export function gitCommonDir(worktreePath, gitFile) {
+  if (gitFile === null) return path.resolve(worktreePath, '.git')
   const gitdir = /^gitdir:\s*(.+?)\s*$/m.exec(String(gitFile))?.[1]
-  if (!gitdir) return null
-  const common = segments(path.resolve(worktreePath, gitdir)).slice(0, -2)
-  const last = common.at(-1)
-  if (last === '.git') return common.at(-2) ?? null
-  return last?.replace(/\.git$/, '') || null
+  return gitdir ? path.resolve(worktreePath, gitdir, '..', '..') : null
+}
+
+// FullOps decision records this plugin reads (FullOps docs/events.md). A missing version is a record from before it: 1.
+export const DECISION_VERSION = 1
+
+/** A FullOps decision waiting for a person: the record as FullOps wrote it, one relayable line, and how to answer. */
+export function decisionPayload(item, { repo, worktree, branch, route, host }) {
+  const label = repo || worktree || 'Orca'
+  const options = Array.isArray(item.options) && item.options.length ? ` [${item.options.join(' / ')}]` : ''
+  // What a person needs to judge it, in the line a routine relays as is.
+  const facts = [
+    Array.isArray(item.risks) && item.risks.length ? `risks: ${item.risks.join(', ')}` : null,
+    item.blocks ? `blocks: ${item.blocks}` : null,
+    item.sha ? `sha: ${String(item.sha).slice(0, 12)}` : null,
+    item.expires_at ? `until: ${item.expires_at}` : null,
+  ].filter(Boolean)
+  return {
+    event: 'fullops.decision',
+    text: `${label}/${item.id}: decision waiting - ${item.question ?? ''}${options}${facts.length ? ` (${facts.join('; ')})` : ''}`,
+    decision: item,
+    reply: `orca-helm decide ${label}/${item.id}${item.sha ? ` --sha ${item.sha}` : ''} --answer <answer> --by <who>`,
+    repo: repo ?? null,
+    worktree: worktree ?? null,
+    branch: branch ?? null,
+    route: route ?? null,
+    host: host ?? null,
+  }
 }
 
 const folded = (value) => String(value ?? '').toLowerCase().replaceAll('\\', '/')
@@ -85,7 +134,7 @@ export function stripAuthPrefix(value) {
   return String(value ?? '').replace(/^\s*authorization:\s*/i, '').trim()
 }
 
-export const SAVED = '(saved)'
+const SAVED = '(saved)'
 const ROUTE_FORMAT = 'expected name | workspaces | URL | Authorization'
 
 /** One `routes` line. Errors name the problem only, never a value. */
@@ -129,14 +178,9 @@ export function parseRoutes(str) {
   }
 }
 
-/** The line kept in Settings once a route's Authorization is in secrets. */
-export function savedRouteLine(route) {
-  return `${route.name} | ${route.workspacesText} | ${route.url} | ${SAVED}`
-}
-
-/** The line the Grok Bot panel writes: `name | a,b | URL`, plus ` | (saved)` when an Authorization is stored. */
-export function routeLine({ name, workspaces, url, saved }) {
-  return `${name} | ${workspaces.join(',')} | ${url}${saved ? ` | ${SAVED}` : ''}`
+/** One `routes` line: `name | workspaces | URL`, plus ` | (saved)` when its Authorization is in secrets. */
+export function routeLine({ name, workspacesText, url, saved }) {
+  return `${name} | ${workspacesText} | ${url}${saved ? ` | ${SAVED}` : ''}`
 }
 
 /** Why the panel's route cannot be written as one line, or null. Never echoes a value. */
@@ -144,13 +188,14 @@ export function routeProblem({ name, url, workspaces }) {
   const bad = (value) => /[|\r\n]/.test(value)
   if (!text(name)) return 'enter a bot name'
   if (bad(name)) return 'a bot name cannot contain | or a line break'
+  // Such a line would be read back as a comment: the bot would vanish with its Authorization stored.
+  if (text(name).startsWith('#')) return 'a bot name cannot start with #'
   if (!isHttpUrl(text(url)) || bad(url)) return 'enter an http(s) routine URL'
   if (workspaces.some((entry) => bad(entry) || entry.includes(','))) return 'a workspace cannot contain , or |'
   return null
 }
 
-const text = (value) => String(value ?? '').trim()
-const lines = (str) => String(str ?? '').replace(/\r\n/g, '\n').split('\n')
+const lines =(str) => String(str ?? '').replace(/\r\n/g, '\n').split('\n')
 const keyOf = (raw) => parseRouteLine(raw).route?.key
 
 /** `line` takes the place of the first line for any of `keys`; later lines for them go. With none, it is appended. */

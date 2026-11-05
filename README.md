@@ -4,7 +4,7 @@
 
 **orca-helm은 Grok Bot이 사용자 PC(Windows/macOS)에서 돌아가는 Orca IDE를 원격으로 쉽게 다루기 위한 도구 세트입니다.** 두 부분이 한 세트이고, 둘 다 설치해야 합니다.
 
-1. **orca-helm CLI** — Grok Bot이 PC의 셸에서 명령으로 호출합니다. Orca 상태 확인(`status`), 터미널 찾기·읽기(`find`, `read`), 작업 지시(`send`, `start`), 완료 대기(`wait`)를 명령 하나씩으로 처리합니다.
+1. **orca-helm CLI** — Grok Bot이 PC의 셸에서 명령으로 호출합니다. Orca 상태 확인(`status`), 터미널 찾기·읽기(`find`, `read`), 작업 지시(`send`, `start`), 완료 대기(`wait`), FullOps 결정 조회·응답(`decisions`, `decide`)을 명령 하나씩으로 처리합니다.
 2. **grokbot-notify 플러그인** — Orca에 설치하는 플러그인입니다. Orca 자체 알림 훅(플러그인 이벤트 `agent.status.changed`)을 받아, 에이전트가 `done` / `waiting` / `blocked` 가 되면 그 알림을 Grok Bot에 넘겨줍니다. GitHub 이슈·푸시 웹훅과는 관계없습니다.
 
 Grok Bot은 CLI로 일을 맡기고 결과를 읽으며, 플러그인 알림으로 언제 다시 볼지 압니다. 의존성 없는 Node.js(18 이상, ESM) 프로그램이고, 공식 `orca` CLI를 감쌉니다.
@@ -105,9 +105,10 @@ orca plugin logs local.grokbot-notify   # 전송 실패, 건너뛴 줄 등 워�
 Grok Bot은 PC 셸에서 orca-helm을 호출합니다. Windows는 `C:\tools\orca-helm\orca-helm.ps1 <명령>`, macOS는 `~/orca-helm/orca-helm <명령>` 입니다.
 
 1. `status` 로 지금 무엇이 돌고 있는지 봅니다.
-2. `send <대상> --file <프롬프트>` 로 기존 터미널에 일을 맡기거나, `start <repo> --name <이름> --file <프롬프트>` 로 새 worktree와 에이전트를 만듭니다.
+2. `send <대상> --file <프롬프트>` 로 기존 터미널에 일을 맡기거나, `start <repo> --name <이름> --agent claude --file <프롬프트>` 로 새 worktree와 에이전트를 만듭니다.
 3. 플러그인 알림(`done` / `waiting` / `blocked`)을 받거나 `wait <대상>` 으로 기다립니다.
 4. `read <대상> --plain` 으로 결과를 읽습니다.
+5. FullOps 저장소라면 일은 coordinator에 `send` 하고, 플러그인이 보낸 결정 알림(`fullops.decision`)에는 `decide` 로 답한 뒤 coordinator에 알립니다.
 
 ## 명령
 
@@ -120,6 +121,8 @@ Grok Bot은 PC 셸에서 orca-helm을 호출합니다. Windows는 `C:\tools\orca
 .\orca-helm.ps1 send jevpet --file C:\tmp\prompt.txt
 .\orca-helm.ps1 start fullops --name fix-x --agent claude --file C:\tmp\p.txt
 .\orca-helm.ps1 wait jevpet --timeout 600
+.\orca-helm.ps1 decisions
+.\orca-helm.ps1 decide orca-helm/D003 --sha <SHA> --answer 진행 --by shin
 .\orca-helm.ps1 raw worktree ps --json
 ```
 
@@ -127,12 +130,14 @@ Grok Bot은 PC 셸에서 orca-helm을 호출합니다. Windows는 `C:\tools\orca
 
 | 명령 | 동작 |
 | --- | --- |
-| `status [query] [--all]` | 터미널마다 한 줄. waiting, working, done, shell, idle, unknown 순. 기본은 archived worktree 제외, `--all` 은 포함. `--json` 은 `{"rows":[...]}` |
+| `status [query] [--all]` | 터미널마다 한 줄. 터미널이 없는 worktree는 `t:-` 로 한 줄(`read`/`send`/`wait` 대상 아님). waiting, working, done, shell, idle, unknown 순. 기본은 archived worktree 제외, `--all` 은 포함. `--json` 은 `{"rows":[...]}` |
 | `find <query>` | archived 포함 상위 10개. `repo list` 의 repo 이름·경로도 봅니다. 줄 끝에 `worktreeId`, `repoId`, `handle`. `--json` 은 `{"matches":[...]}` (각 항목에 `score`) |
 | `read <target> [--lines 40] [--screen] [--plain]` | 마지막 N줄. `--lines 0` 은 0줄. `--screen` 은 `orca terminal read --screen`. `--plain`(같은 뜻 `--strip-tui`)은 TUI 테두리·입력창·하단 상태·사이드패널·도구 줄을 뺀 뒤 N줄을 셉니다. 괄호만 있는 줄, 표, 코드, diff 같은 내용 줄은 남깁니다. `--json` 은 `{"handle","status","lines","truncated"}`, `--plain` 이면 `"plain":true` 추가 |
-| `send <target> (--file \| --text) [--no-enter] [--interrupt]` | 기본은 Enter까지 보냅니다. `--file` 끝의 빈 줄은 뺍니다(Enter가 두 번 되지 않게). `--interrupt` 는 `orca terminal send --interrupt` 로 넘깁니다. 출력 `sent <repo>/<worktree> t:<handle>` |
-| `start <repo> --name <name> [--agent claude\|codex] (--file \| --text)` | `repo list` 에서 repo 하나를 고르고 `orca worktree create --prompt` 를 실행합니다. 출력 `created <이름> id:<worktreeId> repo:<repoId>`, 다음 줄 `t:<handle>` |
+| `send <target> (--file \| --text) [--no-enter] [--interrupt] [--bypass-fullops]` | 기본은 Enter까지 보냅니다. `--file` 끝의 빈 줄은 뺍니다(Enter가 두 번 되지 않게). `--interrupt` 는 `orca terminal send --interrupt` 로 넘깁니다. 텍스트는 `--file` 이라도 orca 명령줄에 실리므로 Windows에서는 약 32,000자까지입니다. 출력 `sent <repo>/<worktree> t:<handle>` |
+| `start <repo> --name <name> --agent claude\|codex (--file \| --text) [--bypass-fullops]` | `repo list` 에서 repo 하나를 고르고 `orca worktree create --agent --prompt` 를 실행합니다(Orca는 프롬프트에 `--agent` 가 꼭 필요합니다). 출력 `created <이름> id:<worktreeId> repo:<repoId>`, 에이전트가 터미널에서 돌면 다음 줄 `t:<handle>` (Orca에서 그 에이전트의 Chat/CLI 설정이 정합니다. 채팅으로 열리면 `read`/`send`/`wait` 대상이 없습니다) |
 | `wait <target> [--timeout 600] [--interval 5] [--for agent\|tui-idle\|exit] [--fresh 60]` | 아래 [wait](#wait) 참고. 초 단위 |
+| `decisions [repo-query] [--all]` | FullOps 저장소마다 열린 결정을 한 줄씩(`--all` 은 닫힌 것까지): `<repo>/<결정 ID>  <상태>  <과제 키>  "<질문>"  [선택지]  sha:<SHA>  until:<만료>  risks:<사유>  blocks:<기다리는 작업>  origin:<진입점>`. `--json` 은 `{"decisions":[...]}` (FullOps 기록에 `repo`, `repoId` 추가). 아래 [FullOps](#fullops) 참고 |
+| `decide <[repo/]D###> --answer <답> --by <답한 사람> [--sha <SHA>]` | FullOps 결정을 닫습니다. 출력 `answered <repo>/<ID>: <답>`, 이미 닫혔으면 `already <상태> <repo>/<ID>: <기존 답>`. 결정 ID는 저장소마다 매기므로 여러 저장소에 같은 ID가 있으면 `<repo>/D003` 으로 씁니다. `--json` 은 FullOps 결과에 `repo` 추가 |
 | `raw [--] <args>` | 같은 orca 바이너리에 그대로 전달하고 종료 코드도 그대로 돌려줍니다. `--` 는 없어도 됩니다 |
 | `help`, `--help`, `--version` | 도움말, 버전 |
 
@@ -153,14 +158,26 @@ Grok Bot은 PC 셸에서 orca-helm을 호출합니다. Windows는 `C:\tools\orca
 
 `status` 한 줄 예: `fullops/main  t:<handle>  waiting  claude  "title"  12m`
 
-상태 칸은 `working` / `waiting` / `done` / `shell` / `idle` / `unknown` 입니다. `permission` 과 `blocked` 는 `waiting`, worktree `active` 와 `inactive` 는 `idle` 입니다. 터미널만 있고 에이전트가 없으면 `shell` 입니다. 같은 `repo/worktree` 라벨이 여러 worktree면 `~` 와 짧은 경로 조각으로 구분합니다(`jevpet/jevpet~982c69f1`). `--json` 의 `state` 는 에이전트가 있으면 Orca가 준 원래 값입니다.
+상태 칸은 `working` / `waiting` / `done` / `shell` / `idle` / `unknown` 입니다. `permission` 과 `blocked` 는 `waiting`, worktree `active` 와 `inactive` 는 `idle` 입니다. 터미널만 있고 에이전트가 없으면 `shell` 입니다. 같은 `repo/worktree` 라벨이 여러 worktree면(archived 포함) `~` 와 짧은 경로 조각(또는 id 해시)으로 구분합니다(`jevpet/jevpet~982c69f1`). `--json` 의 `state` 는 에이전트가 있으면 Orca가 준 원래 값입니다.
 
 ### wait
 
 - 대상은 시작할 때 한 번 터미널 handle로 정하고, 그 뒤로는 그 handle만 봅니다. 기다리는 중 비슷한 이름의 worktree가 생겨도 대상이 바뀌지 않습니다. 터미널이 없는 대상은 바로 오류이고, 기다리는 중 그 터미널이 사라지면 `terminal t:<handle> (<repo>/<worktree>) is gone` 으로 종료 코드 1입니다.
 - `--for agent`(기본): `--interval` 초마다 다시 조회합니다(0이면 0.25초). working을 본 뒤 waiting/done/idle/shell이 되면 끝납니다. 처음부터 waiting/done이어도 최근 `--fresh` 초 안에 바뀐 것이면 끝납니다. 오래된 done은 이전 턴의 것으로 보고 무시합니다. `shell` 과 `idle` 은 fresh만으로는 끝나지 않습니다. 출력은 `status` 한 줄, `--json` 은 `{"row":{...},"timedOut":false}` 입니다.
-- `--for tui-idle` / `--for exit`: `orca terminal wait` 에 맡깁니다. 출력은 `satisfied|timeout <repo>/<worktree> t:<handle> <mode>`, `--json` 은 Orca의 wait 결과입니다.
+- `--for tui-idle` / `--for exit`: `orca terminal wait` 에 맡깁니다. 출력은 `satisfied|timeout <repo>/<worktree> t:<handle> <mode>`, `--json` 은 Orca의 wait 결과입니다. 시간 초과면 Orca가 결과를 주지 않으므로 `{"satisfied":false}` 입니다.
 - 시간 초과는 종료 코드 2입니다.
+
+### FullOps
+
+[FullOps](https://github.com/tourbut/Fullops-Squad-plugin) 저장소(`.fullops-squad/fullops.json` 이 있는 저장소)에서는 일이 coordinator를 거쳐야 route, `worker_done`, Run 추적이 남습니다.
+
+- `send` 대상이 FullOps worker이고 텍스트가 20자를 넘으면 거절합니다. `y`, `1` 같은 확인 응답은 보냅니다. 일은 coordinator에 보내세요. worker는 FullOps와 같은 기준으로 정합니다. 브랜치가 `fullops.json` `roles` 의 역할 브랜치이고, 그 역할이 coordinator 역할(`primary_role`, 없으면 `orca-agents.md` 의 `- coordinator 역할:` 줄)이 아닌 worktree입니다. `fullops/coor` 같은 역할 worktree에서 도는 coordinator와 역할이 없는 브랜치는 worker가 아닙니다.
+- FullOps 저장소에 `start` 하면 거절합니다. 요청은 coordinator에 `send` 하세요.
+- 꼭 직접 보내야 하면 `--bypass-fullops` 를 붙입니다. FullOps가 아닌 저장소에는 아무 영향이 없습니다.
+- `decisions` 와 `decide` 는 FullOps의 `decision.py`(1.16.0 이상)를 Python으로 실행합니다. 판정과 승인 확인은 하지 않고 FullOps에 맡깁니다. `decision.py` 는 `ORCA_HELM_FULLOPS`(플러그인 폴더, 그 `scripts` 폴더, 또는 `decision.py` 경로)에서, 없으면 Claude Code·Codex 플러그인 캐시(`~/.claude/plugins/cache/fullops-squad/fullops-squad/<버전>`, `~/.codex/plugins/cache/...`)의 가장 새 버전에서 찾습니다. Python은 `ORCA_HELM_PYTHON`, 없으면 Windows는 `python`, 그 외는 `python3` 입니다.
+- `decide` 는 답을 봇 경로(`--via bot`)로 기록합니다. `--sha` 는 그 결정의 `sha`(`decisions` 의 `sha:` 칸, 알림의 `reply`)이고, SHA가 묶인 결정에는 꼭 넣어야 합니다. `--by` 는 실제로 답한 사람의 식별자입니다. `allow` 에서 골라 넣지 말고, coordinator의 `--allow` 도 같은 식별자를 쓰게 하세요. `--sha` 가 없거나 다르거나, 만료됐거나, `--by` 가 허용된 응답자가 아니면 FullOps가 거절하고 그 사유로 종료 코드 1입니다. Orca 대화에서 먼저 닫힌 결정에 늦게 답하면 `already` 로 알려 주고 종료 코드 0입니다.
+- FullOps는 결정 기록을 지켜보지 않습니다. 답한 뒤에는 그 결정을 기다리는 coordinator에 알려 주세요(예: `orca-helm send <coordinator> --text "orca-helm/D003 answered: 진행"`).
+- FullOps `decision.py` 를 못 찾거나, 1.16.0보다 오래됐거나, 결정 기록의 형식 버전(`version`)이 1이 아니면 종료 코드 4입니다.
 
 ## 종료 코드
 
@@ -169,7 +186,8 @@ Grok Bot은 PC 셸에서 orca-helm을 호출합니다. Windows는 `C:\tools\orca
 | 0 | 성공 |
 | 1 | 오류. stderr는 `orca-helm: ...` |
 | 2 | `wait` 시간 초과 |
-| 3 | 대상(또는 `start` 의 repo)이 여러 개. 후보를 stdout에 출력 |
+| 3 | 대상(또는 `start`·`decisions`·`decide` 의 repo, `decide` 의 결정)이 여러 개. 후보를 stdout에 출력 |
+| 4 | FullOps `decision.py` 가 없거나 1.16.0보다 오래됨, 결정 기록 형식 버전이 다름, 또는 Python을 실행할 수 없음(`ORCA_HELM_PYTHON`) |
 
 ## 플랫폼 메모
 
@@ -181,9 +199,9 @@ Windows에서는 `orca.cmd`(cmd.exe 래퍼, 따옴표를 깨뜨림) 대신 같�
 
 **orca 바이너리 찾는 순서.** `ORCA_HELM_BIN` 이 있으면 그 경로입니다. 없으면:
 
-- Windows: PATH의 `orca.exe` → PATH의 `orca.cmd` 옆 `orca.exe` → `%LOCALAPPDATA%\Programs\Orca\bin\orca.exe`
+- Windows: PATH의 `orca.exe` → `%LOCALAPPDATA%\Programs\orca\resources\bin\orca.exe`
 - macOS: PATH의 `orca` → `~/.local/bin/orca` → `/usr/local/bin/orca` → `/opt/homebrew/bin/orca`
-- Linux: PATH의 `orca-ide` → PATH의 `orca` → `~/.local/bin/orca-ide` → `/usr/bin/orca-ide`
+- Linux: PATH의 `orca-ide` → `~/.local/bin/orca-ide` → `/usr/bin/orca-ide` → PATH의 `orca` (GNOME의 `/usr/bin/orca` 는 화면 낭독기라 마지막)
 
 못 찾으면 시도한 위치를 나열하고 종료 코드 1로 끝납니다.
 
@@ -198,9 +216,10 @@ Orca가 플러그인에 주는 알림 훅 `agent.status.changed` 를 받아 Grok
 - **봇별 라우팅:** 알림은 `Routes` 의 줄 가운데 워크스페이스가 맞는 봇마다 한 번씩 보냅니다. 워크스페이스 항목이 repo 이름이나 Orca 워크스페이스 이름과 같거나(대소문자 무시) worktree 경로에 들어 있으면 맞습니다. 워크스페이스 칸이 비어 있는 줄은 모든 워크스페이스에 맞습니다. 어느 줄에도 맞지 않으면 아무것도 보내지 않습니다(네트워크 호출 없음, 중복 억제 기록도 없음).
 - `Routes` 에 올바른 줄이 없으면 예전처럼 `webhookUrl` 하나로 모든 워크스페이스를 보냅니다.
 - 기본으로 `done`, `waiting`, `blocked` 만 넘깁니다. `working` 은 넘기지 않습니다(`states` 설정으로 바꿀 수 있음).
-- 같은 터미널의 같은 상태는 봇마다 `debounceSeconds`(기본 30초) 안에 다시 보내지 않습니다. 그 사이 다른 상태(예: `working`)가 있었으면 새 턴으로 보고 다시 보냅니다.
+- 터미널의 상태는 봇마다 바뀔 때만 보냅니다. 같은 상태가 다시 오면(Claude Code는 입력을 기다리는 동안 `waiting` 을 1분쯤마다 다시 알립니다) 보내지 않고, 그 상태가 `remindMinutes`(기본 30분) 넘게 이어진 뒤 다시 오면 리마인드로 한 번만 더 보냅니다. 그 사이 다른 상태(예: `working`)가 있었으면 새 턴으로 보고 다시 보냅니다. 보내지 못한 알림은 보낸 것으로 치지 않아 같은 상태가 다시 오면 다시 시도합니다. 이 기록은 워커 메모리에만 있어서, Orca가 쉬는 워커를 멈추거나(이벤트 없이 5분) 플러그인을 다시 로드하면 그다음 알림은 다시 보냅니다.
 - 연결 실패, 429, 5xx는 봇마다 2초 뒤 한 번 더 보냅니다. 10초 타임아웃은 Grok Bot이 이미 받았을 수 있어 다시 보내지 않습니다. 실패는 봇 이름과 함께 `orca plugin logs local.grokbot-notify` 에 남습니다.
 - worktree 이름과 브랜치는 `workspace.list` 로, repo 이름은 worktree의 `.git` 으로 찾습니다(본 worktree는 그 폴더 이름, 연결된 worktree는 `gitdir:` 가 가리키는 본 저장소 폴더 이름). 못 찾으면 `null` 입니다.
+- **FullOps 결정:** FullOps 저장소의 에이전트 알림이 오면 그 저장소의 열린 결정(Git 공용 디렉터리의 `fullops-decisions/D*.json`) 가운데 봇으로 들어온 과제의 결정(`origin: bot`)을 워크스페이스가 맞는 봇마다 한 번씩 보냅니다. Orca 대화로 들어온 과제의 결정(`origin: user`)은 coordinator 대화에서 먼저 물으므로 보내지 않습니다. 주기 폴링은 없고, 보내지 못하면 다음 알림 때 다시 보내며, 답한 결정은 잊습니다. 형식 버전이 1이 아닌 기록은 보내지 않고 로그에 남깁니다. 반복 억제처럼 이 기록도 워커 메모리에만 있습니다. worker 질문(`question`), `escalation`, 병합 실패, 자동 승인 판정은 보내지 않습니다. 플러그인은 Orca orchestration 메시지를 읽을 수 없어서, 이런 사건은 coordinator 터미널의 상태 알림이나 coordinator가 연 결정으로만 사람에게 갑니다.
 - 마지막 응답 내용은 담기지 않습니다. Orca 알림 훅이 주지 않습니다. 내용은 `orca-helm read <repo>/<worktree> --plain` 으로 읽습니다.
 
 ### 보내는 JSON
@@ -225,11 +244,30 @@ Orca가 플러그인에 주는 알림 훅 `agent.status.changed` 를 받아 Grok
 ```
 
 - `text`: 루틴이 그대로 전달할 수 있는 한 줄. `<repo>/<worktree>: <state> (<outcome>) - <title>`. `<repo>/<worktree>` 는 `orca-helm status` 의 라벨과 같아 그대로 대상으로 쓸 수 있습니다. 둘 다 모르면 `Orca`.
-- `state`: Orca가 준 상태(`done` / `waiting` / `blocked` / `working`). `outcome`: `success` / `failure` 또는 `null`.
+- `state`: Orca가 준 상태(`done` / `waiting` / `blocked` / `working`). `outcome`: Orca가 준 `mainAgent.outcome` 그대로(`success` / `failure` / `cancellation` / `superseded` / `interruption` / `unconfirmed`) 또는 `null`.
 - `title`: 터미널 제목. `terminalId` 는 orca-helm의 handle과 같아서 `orca-helm read t:<terminalId>` 로 바로 읽을 수 있습니다.
 - `worktree`, `branch`, `repo`: worktree 이름, 브랜치, repo 폴더 이름. 모르면 `null`.
 - `route`: 이 알림을 받은 봇 이름(`Routes` 줄의 첫 칸). `webhookUrl` 하나로 보낼 때는 `null`.
 - `receivedAt`: Orca가 상태를 받은 시각(ISO 8601). `host`: PC 호스트 이름.
+
+FullOps 결정 알림은 `event` 가 `fullops.decision` 입니다. 터미널 상태 알림(`agent.status.changed`, 예: `done`)은 그 터미널의 에이전트가 멈췄다는 뜻일 뿐이고, FullOps 작업이 끝났는지는 알려 주지 않습니다. `fullops.decision` 은 사람이 답해야 하는 결정입니다.
+
+```json
+{
+  "event": "fullops.decision",
+  "text": "orca-helm/D003: decision waiting - 로그인 수정 병합할까요? [진행 / 보류] (risks: auth 변경; blocks: login merge; sha: <SHA 앞 12자>; until: 2026-11-06T01:00:00+00:00)",
+  "decision": {"version": 1, "id": "D003", "status": "open", "key": "login", "question": "로그인 수정 병합할까요?", "options": ["진행", "보류"], "blocks": "login merge", "origin": "bot", "sha": "<40자리 SHA>", "risks": ["auth 변경"], "allow": ["shin"], "expires_at": "2026-11-06T01:00:00+00:00"},
+  "reply": "orca-helm decide orca-helm/D003 --sha <40자리 SHA> --answer <answer> --by <who>",
+  "repo": "orca-helm",
+  "worktree": "main",
+  "branch": "main",
+  "route": "풀로",
+  "host": "my-pc"
+}
+```
+
+- `decision`: FullOps가 쓴 결정 기록 그대로(형식은 FullOps `events.md`). 비밀값은 들어 있지 않습니다.
+- `reply`: 답할 명령. `<answer>` 는 선택지 가운데 하나, `<who>` 는 실제로 답한 사람의 식별자입니다(`allow` 에서 골라 넣지 않습니다). 답한 뒤에는 coordinator에 알립니다.
 
 ### 설정
 
@@ -238,10 +276,10 @@ Orca **Settings** 에서 이 플러그인 아래에 보입니다.
 | 키 | 화면 이름 | 설명 |
 | --- | --- | --- |
 | `routes` | Routes (one Grok Bot per line) | 보통은 **Grok Bot** 패널이 씁니다. 여러 줄, 한 줄에 봇 하나: `봇이름 \| 워크스페이스1,워크스페이스2 \| 루틴 URL \| Authorization 값`. 저장하면 끝 칸이 `(saved)` 로 바뀝니다. [설치 3단계](#3-grok-bot-루틴-연결) 참고 |
-| `webhookUrl` | Grok Bot routine URL | `routes` 가 비어 있을 때만: 모든 워크스페이스를 받을 루틴 URL 하나. `auth.set` 의 `url` 로도 넣습니다 |
-| `authValue` | Authorization value | `routes` 가 비어 있을 때만: 위 URL의 Authorization 값. 붙여 넣으면 워커가 바로 secrets로 옮기고 칸을 비웁니다 |
+| `webhookUrl` | Grok Bot routine URL | `routes` 에 올바른 줄이 없을 때만: 모든 워크스페이스를 받을 루틴 URL 하나. `auth.set` 의 `url` 로도 넣습니다 |
+| `authValue` | Authorization value | `routes` 에 올바른 줄이 없을 때만: 위 URL의 Authorization 값. 붙여 넣으면 워커가 바로 secrets로 옮기고 칸을 비웁니다(옮길 수 없으면 칸에 남은 값으로 보냅니다) |
 | `states` | States | 넘길 상태, 쉼표로 구분. 기본 `done,waiting,blocked` |
-| `debounceSeconds` | Debounce seconds | 같은 상태를 다시 보내기 전 대기 초. 기본 `30` |
+| `remindMinutes` | Reminder minutes | 바뀌지 않은 상태를 리마인드로 한 번 더 보내기까지 이어져야 하는 분. `0` 이면 다시 보내지 않음. 기본 `30` |
 
 ### 핸들러
 
@@ -250,7 +288,7 @@ Grok Bot 패널은 `plugin.request` 로 `routes.*` 를 부릅니다. 명령줄�
 | 이름 | 입력 | 결과 |
 | --- | --- | --- |
 | `routes.list` | 없음 | `{"routes":[{"name","url","workspaces","hasAuth"}],"workspaces":[체크박스 후보],"errors":[{"line","reason"}]}`. Authorization 값은 돌려주지 않습니다 |
-| `routes.save` | `{"previousName"?, "name", "url", "workspaces": [...], "auth"?}` | 새 `routes.list` 결과. `auth` 가 비면 저장된 값을 그대로 두고, 이름이 바뀌면 값도 옮깁니다. 틀린 값은 이유만 담은 오류 |
+| `routes.save` | `{"previousName"?, "name", "url", "workspaces": [...], "auth"?}` | 새 `routes.list` 결과. `auth` 가 비면 저장된 값을 그대로 두고, 이름이 바뀌면 값도 옮깁니다. 틀린 값은 이유만 담은 오류이고, secrets를 읽거나 쓸 수 없을 때도 오류이며 아무것도 바뀌지 않습니다 |
 | `routes.delete` | `{"name"}` | 새 `routes.list` 결과. 그 봇의 줄과 저장된 Authorization을 지웁니다 |
 | `auth.set` | `{"route": "<routes 한 줄>"}` 또는 `{"url"?: string, "value"?: string}` | `{"ok":true}`. `route` 는 `routes` 끝에 붙어 같은 이름의 예전 줄을 대신합니다. 틀린 줄이면 이유만 담은 오류 |
 | `auth.status` | 없음 | `{"hasAuth","hasUrl","protection","routes":[{"name","workspaces","hasAuth"}],"errors":[{"line","reason"}]}`. 값 자체는 돌려주지 않습니다 |
@@ -258,7 +296,7 @@ Grok Bot 패널은 `plugin.request` 로 `routes.*` 를 부릅니다. 명령줄�
 
 ### 비밀값
 
-- Authorization 값은 Orca의 암호화된 플러그인 secrets에만 저장합니다(봇마다 따로, 봇 이름으로 구분). `protection` 이 `unavailable` 이면(OS 키 저장소 없음, Linux `basic_text`) 저장이 실패하고, 그 줄은 값이 든 채로 남아 그 값으로 보냅니다.
+- Authorization 값은 Orca의 암호화된 플러그인 secrets에만 저장합니다(봇마다 따로, 봇 이름으로 구분). `protection` 이 `unavailable` 이면(OS 키 저장소 없음, Linux `basic_text`) 저장이 실패하고, 그 줄은 값이 든 채로 남아 그 값으로 보냅니다. 이때 패널에서는 Authorization이 있는 봇을 저장할 수 없으니(저장하면 오류) Settings의 `Routes` 칸에 줄을 직접 넣으세요. `authValue` 칸에 붙여 넣은 값도 칸에 남아 그대로 보냅니다.
 - 워커 로그와 오류 메시지에는 Authorization 값과 루틴 URL을 쓰지 않습니다. URL에 토큰이 들어 있을 수 있기 때문입니다. 틀린 `routes` 줄도 줄 번호와 이유만 남깁니다.
 
 ### 권한
@@ -284,6 +322,6 @@ orca plugin check .
 
 `npm test` 는 CLI와 플러그인 워커 테스트를 돌립니다(로컬 HTTP 스텁만 씀). `orca plugin test .` 는 Orca 런타임으로 패널과 실제 워커를 함께 돌리는 `panel/routes.test.tsx` 까지 돌리고, `orca plugin check .` 는 `panel/routes.check.ts` 의 시나리오대로 패널을 그려 봅니다. Orca 1.4.247(Windows)은 저장소가 Orca 설치 드라이브(C:)와 다른 드라이브에 있으면 이 두 명령이 `cannot import "./orca-runtime.mjs"` 로 실패합니다. 공식 템플릿도 같으므로, C: 드라이브에 복사해서 돌리세요.
 
-태그가 있으면 Settings → Plugins → Install plugin에 `https://github.com/tourbut/orca-helm.git#v0.4.0` 같은 Git URL로도 설치할 수 있습니다. 이렇게 설치해도 Grok Bot 패널로 봇을 관리할 수 있습니다(`orca plugin dev request` 만 닿지 않습니다). 디렉터리(onorca.dev/plugins)는 공개 저장소 루트의 `orca-plugin.json`, 토픽 `orca-plugin`, 최신 `vX.Y.Z` 태그를 봅니다. 배포 절차는 [plugins/grokbot-notify/README.md](plugins/grokbot-notify/README.md) 에 있습니다.
+태그가 있으면 Settings → Plugins → Install plugin에 `https://github.com/tourbut/orca-helm.git#v0.5.0` 같은 Git URL로도 설치할 수 있습니다. 이렇게 설치해도 Grok Bot 패널로 봇을 관리할 수 있습니다(`orca plugin dev request` 만 닿지 않습니다). 디렉터리(onorca.dev/plugins)는 공개 저장소 루트의 `orca-plugin.json`, 토픽 `orca-plugin`, 최신 `vX.Y.Z` 태그를 봅니다. 배포: `orca plugin validate .` 를 돌리고, `orca-plugin.json` 과 `package.json` 의 `version` 을 올려 커밋·푸시한 뒤, 그 커밋에 태그를 붙여 푸시합니다(`git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z`). 저장소에는 `orca-plugin` 토픽이 한 번 필요합니다: `gh repo edit tourbut/orca-helm --add-topic orca-plugin`.
 
-상태: 워커는 로컬 HTTP 스텁과 모의 Orca로, Grok Bot 패널은 Orca 테스트 키트(대체 호스트)로 검증했습니다. 실제 Orca에 로드해 패널을 띄우고 Grok Bot까지 보낸 확인은 아직 없습니다.
+상태: 실제 Orca에서 Grok Bot까지 알림이 가는 것을 확인했습니다(이슈 #1). Grok Bot 패널은 Orca 테스트 키트(대체 호스트)로만 검증했고, 실제 Orca에서 열어 본 확인은 아직 없습니다.
