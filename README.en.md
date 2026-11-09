@@ -51,7 +51,7 @@ Register the same clone with Orca as a development folder. The plugin manifest i
 - Add the clone under Orca **Settings → Plugins → Development folders**.
 - Or run `orca plugin dev load .` in the clone. If it prints a fingerprint, approve it with `orca plugin dev load . --approve <fingerprint>`.
 
-Once loaded, the plugin key is `local.grokbot-notify`. It asks only for the five capabilities in [Capabilities](#capabilities).
+Once loaded, the plugin key is `local.grokbot-notify`. It asks only for the six capabilities in [Capabilities](#capabilities).
 
 ### 3. Connect the Grok Bot routine
 
@@ -108,7 +108,7 @@ Grok Bot calls orca-helm from the PC's shell: `C:\tools\orca-helm\orca-helm.ps1 
 2. `send <target> --file <prompt>` gives work to an existing terminal, or `start <repo> --name <name> --agent claude --file <prompt>` creates a worktree with a new agent.
 3. It gets a plugin alert (`done` / `waiting` / `blocked`), or waits with `wait <target>`.
 4. `read <target> --plain` reads the result.
-5. In a FullOps repo, `send` work to the coordinator, and answer the plugin's decision alerts (`fullops.decision`) with `decide`, then tell the coordinator.
+5. In a FullOps repo, `send` work to the coordinator, and answer the plugin's decision alerts (`fullops.decision`) with `decide`, then tell the coordinator. The other `fullops.*` alerts are only for a person to read.
 
 ## Commands
 
@@ -219,7 +219,13 @@ It receives Orca's plugin alert hook `agent.status.changed` and POSTs JSON to th
 - Per bot, a terminal's state is sent only when it or the terminal's tail (`tail`) changes. The same state with the same tail reported again (Claude Code re-reports `waiting` about every minute while it waits for input) is not sent; once that state has lasted `remindMinutes` (30 by default), the next report goes out once more as a reminder. If another state, such as `working`, came in between, it counts as a new turn and is sent. An alert that did not get through does not count as sent, so the next report of that state tries again. The record lives in the worker's memory: after Orca stops an idle worker (5 minutes with no events) or the plugin reloads, the next report goes out again.
 - Per bot, a failed connection, 429 or 5xx is retried once after 2 seconds. A 10-second timeout is not retried, because Grok Bot may already have the first one. Failures show with the bot's name in `orca plugin logs local.grokbot-notify`.
 - The worktree name and branch come from `workspace.list`, and the repo name from the worktree's `.git` (the main worktree's folder name, or the main repo folder that a linked worktree's `gitdir:` points to). Each is `null` when not found.
-- **FullOps decisions:** when an agent of a FullOps repo reports, the open decisions of that repo (`fullops-decisions/D*.json` in its Git common directory) that belong to a task started through the bot (`origin: bot`) go once to every bot whose workspaces match. Decisions of tasks started in the Orca chat (`origin: user`) are asked in the coordinator chat first, so they are not sent. Nothing polls; a delivery that failed is tried again at the next alert, and an answered decision is forgotten. A record with a format version other than 1 is not sent and is logged. Like the repeat check, this record lives in the worker's memory. Worker questions (`question`), `escalation`, failed merges and autonomy judgments are not sent: the plugin cannot read Orca orchestration messages, so those reach a person only as the coordinator terminal's status alert or as a decision the coordinator opens.
+- **FullOps events:** when an agent of a FullOps repo reports, the events of that repo meant for a person go once to every bot whose workspaces match. Nothing polls. The plugin judges and verifies nothing; it relays what FullOps recorded.
+  - Open decisions (`fullops-decisions/`) and `ask` or `blocked` judgments (`fullops-autonomy/`) of a task started through the bot (`origin: bot`) are sent. An expired decision cannot be answered, so it is not sent. An `ask` judgment on a commit that has a decision is covered by the decision alert. Tasks started in the Orca chat (`origin: user`) are asked in the coordinator chat first, so they are not sent.
+  - Merge holds (`hold` in `fullops-integration/`), worker `escalation` messages and failed `worker_done` messages (`outcome: failed`) are sent. These name no origin, so they go whatever the origin was.
+  - `auto` judgments are not sent by default; turn on the `fullopsAuto` setting to send them. `delay` judgments, worker `question` messages and successful `worker_done` messages are the coordinator's to handle and are not sent.
+  - Orchestration messages are read with `orca orchestration inbox` only when an agent reports it stopped (any state but `working`). That read consumes nothing, so the coordinator's mail is unaffected. The repo comes from the workspace in `worker-show`; a message with no dispatch cannot be tied to a repo and is not sent.
+  - An event goes to each bot once. What was sent is kept in the plugin's storage (`storage:own`), so it survives a worker restart. A delivery that failed is tried again at the next alert, and a closed event is forgotten. Judgments, holds and messages older than 24 hours do not go to a new bot or a new install either. A decision or judgment with a format version other than 1 is not sent and is logged.
+  - Secrets in free text such as questions, reasons and bodies are masked by the same rules as `tail`. The `sha` field stays whole, since the answer needs it.
 - **Terminal tail:** Orca's alert hook does not carry the agent's last reply, so for a state it will send, the worker reads the terminal with `terminal.read` and puts the result in `tail`. It removes the input box, footers and side panels by the same rules as `read --plain`, so their counters changing, or a resize re-wrapping lines, does not count as new output. `working` is not read, because its output keeps changing; that state is compared alone. When the terminal cannot be read (closed, capability not approved), the reason goes to the log and the alert goes without a `tail`. For earlier output, use `orca-helm read <repo>/<worktree> --plain`.
 
 ### The JSON it sends
@@ -256,7 +262,17 @@ It receives Orca's plugin alert hook `agent.status.changed` and POSTs JSON to th
 ` between lines): about the last 1500 characters without ANSI or TUI chrome, cut at a line start, with secrets masked. `null` when it could not be read, is empty, or the state is `working`.
 - `needsInput`: `true` when one of `tail`'s last 8 lines asks something (a boolean). It uses fixed rules only, no LLM: `?` right after a word or `？`, words ending in `까요` or `주세요`, and `(y/n)` or `[y/N]`. It is a hint: `false` does not promise that no person is needed.
 
-A FullOps decision alert has `event` `fullops.decision`. A terminal state alert (`agent.status.changed`, such as `done`) only says that terminal's agent stopped; it does not say a FullOps task finished. `fullops.decision` is a decision a person has to answer.
+Tell terminal states and FullOps events apart by `event`. `agent.status.changed` (such as `done`) only says that terminal's agent stopped; it does not say a FullOps task finished. `fullops.*` events come from what FullOps recorded or from worker messages.
+
+| `event` | Meaning | What a person does |
+| --- | --- | --- |
+| `fullops.decision` | A decision is waiting | Answers with the `reply` command |
+| `fullops.judgment` | A merge judgment (`grade`, `blocked`, `blockers`, `reasons`, `key`, `sha`). In today's shadow mode it does not change the merge flow | Reads it. A decision to answer comes separately as `fullops.decision` |
+| `fullops.hold` | A merge is on hold (`reason`, `owner`, `resume`, `key`, `sha`) | Checks the resume condition |
+| `fullops.escalation` | A worker is stuck (`subject`, `body`, `messageId`, `sentAt`) | Instructs the coordinator |
+| `fullops.failed` | A worker reported failure (same fields as `fullops.escalation`) | Instructs the coordinator |
+
+Every `fullops.*` alert has a one-line `text` and `repo`, `worktree`, `branch`, `route`, `host`. `worktree` and `branch` are those of the agent whose report triggered the alert, which may not be the worker behind the event. A decision alert looks like this:
 
 ```json
 {
@@ -272,7 +288,7 @@ A FullOps decision alert has `event` `fullops.decision`. A terminal state alert 
 }
 ```
 
-- `decision`: the decision record as FullOps wrote it (format in FullOps's `events.md`). It holds no secrets.
+- `decision`: the decision record FullOps wrote (format in FullOps's `events.md`), with secrets in free text masked.
 - `reply`: the command that answers it. `<answer>` is one of the options, `<who>` the identity of whoever actually answered (never picked from `allow`). Tell the coordinator after answering.
 
 ### Settings
@@ -286,6 +302,7 @@ They appear under the plugin in Orca **Settings**.
 | `authValue` | Authorization value | Only while `routes` has no valid line: the Authorization value for that URL. Paste once; the worker moves it into secrets right away and clears the field (when it cannot, the value stays in the field and is sent from there) |
 | `states` | States | States to hand over, comma-separated. Default `done,waiting,blocked` |
 | `remindMinutes` | Reminder minutes | Minutes an unchanged state must last before it is sent once more as a reminder; `0` never reminds. Default `30` |
+| `fullopsAuto` | Send FullOps auto judgments | Also sends the `auto` judgment of a task started through the bot. Default `false` |
 
 ### Handlers
 
@@ -315,8 +332,9 @@ The Grok Bot panel calls `routes.*` through `plugin.request`. From the command l
 | `terminal:read` | Reading that terminal's output to build an alert's `tail` (Orca 1.4.248+) |
 | `settings:own` | Reading its settings, saving `auth.set`, turning Authorization values into `(saved)` or clearing the field |
 | `secrets:own` | Storing and reading the Authorization value |
+| `storage:own` | Remembering which FullOps events were sent |
 
-`terminal:read` is new, so after updating you need to approve the plugin again in Orca. It asks for no terminal input and no agent launch. The plugin only alerts Grok Bot; the CLI does everything that changes Orca. The Grok Bot panel (`plugins/grokbot-notify/panel/routes.tsx`, a components panel) uses no capability of its own: it only asks the worker.
+`storage:own` is new, so after updating you need to approve the plugin again in Orca. It asks for no terminal input and no agent launch. The plugin only alerts Grok Bot; the CLI does everything that changes Orca. The Grok Bot panel (`plugins/grokbot-notify/panel/routes.tsx`, a components panel) uses no capability of its own: it only asks the worker.
 
 ### Development and release
 

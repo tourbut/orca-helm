@@ -33,7 +33,7 @@ async function startStub(statuses) {
 }
 
 /** `terminals` maps a terminal id to its output lines; without it this Orca has no terminal.read. */
-function mockOrca(workspaces = [], terminals = null) {
+function mockOrca(workspaces = [], terminals = null, store = {}) {
   const settings = { states: 'done,waiting,blocked', remindMinutes: 30, webhookUrl: '', authValue: '' }
   const secrets = {}
   // Set fail.get / fail.set to make that secrets method throw, as Orca's store does without OS encryption.
@@ -46,6 +46,7 @@ function mockOrca(workspaces = [], terminals = null) {
   const orca = {
     log: (message) => logs.push(message),
     settings: { get: async (key) => (key === undefined ? { ...settings } : settings[key]), onDidChange: (fn) => (onSettings = fn) },
+    storage: { get: async (key) => store[key] ?? null, set: async (key, value) => void (store[key] = JSON.parse(JSON.stringify(value))) },
     events: { on: (_event, fn) => (listener = fn) },
     panels: { handle: (name, fn) => (handlers[name] = fn) },
     host: {
@@ -309,6 +310,132 @@ test('issue #2: an open FullOps decision of a bot task goes to its routes once, 
     stub.close()
     git.cleanup()
   }
+})
+
+// A stand-in for `orca orchestration`: node runs ./orchestration, which answers from script.json.
+const FAKE_ORCA = `const fs = require('fs')
+const script = JSON.parse(fs.readFileSync('script.json', 'utf8'))
+const answer = (result) => process.stdout.write(JSON.stringify({ ok: true, result }))
+if (script.down) {
+  process.stdout.write(JSON.stringify({ ok: false, error: { code: 'unavailable', message: 'orca is down' } }))
+  process.exitCode = 1
+} else if (process.argv[2] === 'inbox') answer({ messages: script.messages })
+else answer({ workspace: script.workspaces[process.argv[process.argv.indexOf('--dispatch') + 1]] })
+`
+
+test('issue #2: judgments, holds, failures and escalations reach a person once, even across a worker restart', async (t) => {
+  const stub = await startStub([])
+  const git = gitFixture()
+  const fake = fs.mkdtempSync(path.join(os.tmpdir(), 'grokbot-notify-orca-'))
+  fs.writeFileSync(path.join(fake, 'package.json'), '{"type":"commonjs"}')
+  fs.writeFileSync(path.join(fake, 'orchestration'), FAKE_ORCA)
+  const script = (value) => fs.writeFileSync(path.join(fake, 'script.json'), JSON.stringify(value))
+  const cwd = process.cwd()
+  const bin = process.env.ORCA_HELM_BIN
+  process.chdir(fake)
+  process.env.ORCA_HELM_BIN = process.execPath
+  t.after(() => {
+    process.chdir(cwd)
+    if (bin === undefined) delete process.env.ORCA_HELM_BIN
+    else process.env.ORCA_HELM_BIN = bin
+    stub.close()
+    git.cleanup()
+    fs.rmSync(fake, { recursive: true, force: true })
+  })
+
+  fs.mkdirSync(path.join(git.worktree, '.fullops-squad'))
+  fs.writeFileSync(path.join(git.worktree, '.fullops-squad', 'fullops.json'), '{}')
+  const common = path.join(git.root, 'shop', '.git')
+  const write = (folder, name, item) => {
+    fs.mkdirSync(path.join(common, folder), { recursive: true })
+    fs.writeFileSync(path.join(common, folder, `${name}.json`), JSON.stringify(item))
+  }
+  const sha = 'c'.repeat(40)
+  const leak = 'Authorization: Bearer s3cret-token'
+  const judgment = { version: 1, kind: 'autonomy_judgment', grade: 'ask', blocked: false, blockers: [], reasons: [`auth 경로 ${leak}`], key: 'login', origin: 'bot', head: sha }
+  write('fullops-autonomy', 'login-ask', judgment)
+  write('fullops-autonomy', 'chat-ask', { ...judgment, key: 'chat', origin: 'user' })
+  write('fullops-autonomy', 'docs-auto', { ...judgment, key: 'docs', grade: 'auto' })
+  write('fullops-autonomy', 'lint-delay', { ...judgment, key: 'lint', grade: 'delay', blocked: true, blockers: ['lint ERROR 1건'] })
+  write('fullops-autonomy', 'next-v2', { ...judgment, key: 'next', version: 2 })
+  // The decision on this commit asks the person, so its `ask` judgment adds nothing.
+  write('fullops-autonomy', 'pay-ask', { ...judgment, key: 'pay', head: 'd'.repeat(40) })
+  write('fullops-decisions', 'D001', { version: 1, id: 'D001', status: 'open', key: 'pay', question: `병합? ${leak}`, origin: 'bot', sha: 'd'.repeat(40) })
+  write('fullops-decisions', 'D002', { version: 1, id: 'D002', status: 'open', question: 'too late', origin: 'bot', expires_at: '2026-01-01T00:00:00+00:00' })
+  write('fullops-integration', 'aaa', { message: 'msg_0', key: 'login', sha, hold: { reason: 'CI 실패', owner: 'dev', resume: 'CI 수정 후' } })
+  write('fullops-integration', 'bbb', { message: 'msg_9', key: 'old', sha })
+  const old = path.join(common, 'fullops-integration', 'old.json')
+  fs.writeFileSync(old, JSON.stringify({ message: 'msg_8', key: 'old', hold: { reason: 'long ago' } }))
+  fs.utimesSync(old, new Date(0), new Date(0))
+
+  const at = new Date().toISOString()
+  const message = (id, type, dispatchId, extra = {}) => ({ id, type, subject: `${id} subject`, body: `막힘 ${leak}`, created_at: at, payload: JSON.stringify({ dispatchId, ...extra }) })
+  const inbox = {
+    messages: [
+      message('msg_1', 'escalation', 'ctx_shop'),
+      message('msg_2', 'worker_done', 'ctx_shop', { outcome: 'failed' }),
+      message('msg_3', 'worker_done', 'ctx_shop', { outcome: 'succeeded' }),
+      message('msg_4', 'question', 'ctx_shop'),
+      message('msg_5', 'escalation', 'ctx_other'),
+      { ...message('msg_6', 'escalation', 'ctx_shop'), created_at: '2026-01-01T00:00:00Z' },
+    ],
+    workspaces: { ctx_shop: 'r1::C:/wt/shop', ctx_other: 'r2::C:/wt/other' },
+  }
+  script(inbox)
+
+  const store = {}
+  const workspaceId = `r1::${git.worktree}`
+  const start = async () => {
+    const mock = mockOrca([{ id: workspaceId, kind: 'worktree', name: 'main', branch: 'main', path: git.worktree }], null, store)
+    mock.settings.routes = `풀로 | shop | ${stub.url} | Bearer a1`
+    mock.settings.states = 'blocked' // no terminal alerts in this test
+    await activate(mock.orca)
+    return mock
+  }
+  const settled = { workspaceId, paneKey: 'p', terminalId: 't1', title: 'x', state: 'done', receivedAt: 1 }
+  const sent = () => stub.received.map(({ body }) => body.event + (body.key ? `:${body.key}` : '') + (body.messageId ? `:${body.messageId}` : '') + (body.decision ? `:${body.decision.id}` : ''))
+
+  const first = await start()
+  await first.emit(settled)
+  assert.deepEqual(sent().sort(), [
+    'fullops.decision:D001',
+    'fullops.escalation:msg_1',
+    'fullops.failed:msg_2',
+    'fullops.hold:login',
+    'fullops.judgment:lint',
+    'fullops.judgment:login',
+  ])
+  const bodies = Object.fromEntries(stub.received.map(({ body }) => [body.event, body]))
+  assert.equal(bodies['fullops.hold'].text, 'shop: login on hold - CI 실패 (owner: dev; resume: CI 수정 후)')
+  assert.equal(bodies['fullops.hold'].sha, sha)
+  assert.equal(bodies['fullops.decision'].decision.sha, 'd'.repeat(40))
+  assert.equal(bodies['fullops.escalation'].body, '막힘 Authorization: Bearer [REDACTED]')
+  assert.doesNotMatch(JSON.stringify(stub.received.map((r) => r.body)), /s3cret-token|t0ken|Bearer a1/)
+  assert.ok(first.logs.includes('FullOps judgment next-v2 is format version 2; update grokbot-notify to send it'))
+
+  // Orca stops an idle worker; the next one remembers. A `working` report does not read messages or forget them.
+  const count = stub.received.length
+  const second = await start()
+  await second.emit(settled)
+  await second.emit({ ...settled, state: 'working' })
+  await second.emit(settled)
+  assert.equal(stub.received.length, count)
+
+  // Orca is unreachable: nothing to read, and what was sent is not forgotten.
+  script({ down: true })
+  await second.emit(settled)
+  assert.ok(second.logs.includes('could not read Orca messages: orca is down'))
+  script(inbox)
+  await second.emit(settled)
+  assert.equal(stub.received.length, count)
+
+  // A hold that was resumed and set again is news; so is an auto judgment once asked for.
+  write('fullops-integration', 'aaa', { message: 'msg_0', key: 'login', sha })
+  await second.emit(settled)
+  write('fullops-integration', 'aaa', { message: 'msg_0', key: 'login', sha, hold: { reason: 'CI 실패', owner: 'dev', resume: 'CI 수정 후' } })
+  second.settings.fullopsAuto = true
+  await second.emit(settled)
+  assert.deepEqual(sent().slice(count).sort(), ['fullops.hold:login', 'fullops.judgment:docs'])
 })
 
 test('a failed delivery logs no secret and is tried again on the next report of that state', async () => {

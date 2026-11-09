@@ -51,7 +51,7 @@ PATH에 넣으려면 Windows는 `C:\tools\orca-helm` 을 PATH에 추가하고, m
 - Orca **Settings → Plugins → Development folders** 에 clone 폴더를 추가합니다.
 - 또는 clone 폴더에서 `orca plugin dev load .` 을 실행합니다. fingerprint가 출력되면 `orca plugin dev load . --approve <fingerprint>` 로 승인합니다.
 
-로드되면 플러그인 키는 `local.grokbot-notify` 입니다. 요청 권한은 아래 [권한](#권한) 표의 다섯 가지뿐입니다.
+로드되면 플러그인 키는 `local.grokbot-notify` 입니다. 요청 권한은 아래 [권한](#권한) 표의 여섯 가지뿐입니다.
 
 ### 3. Grok Bot 루틴 연결
 
@@ -108,7 +108,7 @@ Grok Bot은 PC 셸에서 orca-helm을 호출합니다. Windows는 `C:\tools\orca
 2. `send <대상> --file <프롬프트>` 로 기존 터미널에 일을 맡기거나, `start <repo> --name <이름> --agent claude --file <프롬프트>` 로 새 worktree와 에이전트를 만듭니다.
 3. 플러그인 알림(`done` / `waiting` / `blocked`)을 받거나 `wait <대상>` 으로 기다립니다.
 4. `read <대상> --plain` 으로 결과를 읽습니다.
-5. FullOps 저장소라면 일은 coordinator에 `send` 하고, 플러그인이 보낸 결정 알림(`fullops.decision`)에는 `decide` 로 답한 뒤 coordinator에 알립니다.
+5. FullOps 저장소라면 일은 coordinator에 `send` 하고, 플러그인이 보낸 결정 알림(`fullops.decision`)에는 `decide` 로 답한 뒤 coordinator에 알립니다. 다른 `fullops.*` 알림은 사람에게 전달만 합니다.
 
 ## 명령
 
@@ -219,7 +219,13 @@ Orca가 플러그인에 주는 알림 훅 `agent.status.changed` 를 받아 Grok
 - 터미널의 상태는 봇마다 상태나 터미널 꼬리(`tail`)가 바뀔 때만 보냅니다. 같은 상태에 같은 꼬리가 다시 오면(Claude Code는 입력을 기다리는 동안 `waiting` 을 1분쯤마다 다시 알립니다) 보내지 않고, 그 상태가 `remindMinutes`(기본 30분) 넘게 이어진 뒤 다시 오면 리마인드로 한 번만 더 보냅니다. 그 사이 다른 상태(예: `working`)가 있었으면 새 턴으로 보고 다시 보냅니다. 보내지 못한 알림은 보낸 것으로 치지 않아 같은 상태가 다시 오면 다시 시도합니다. 이 기록은 워커 메모리에만 있어서, Orca가 쉬는 워커를 멈추거나(이벤트 없이 5분) 플러그인을 다시 로드하면 그다음 알림은 다시 보냅니다.
 - 연결 실패, 429, 5xx는 봇마다 2초 뒤 한 번 더 보냅니다. 10초 타임아웃은 Grok Bot이 이미 받았을 수 있어 다시 보내지 않습니다. 실패는 봇 이름과 함께 `orca plugin logs local.grokbot-notify` 에 남습니다.
 - worktree 이름과 브랜치는 `workspace.list` 로, repo 이름은 worktree의 `.git` 으로 찾습니다(본 worktree는 그 폴더 이름, 연결된 worktree는 `gitdir:` 가 가리키는 본 저장소 폴더 이름). 못 찾으면 `null` 입니다.
-- **FullOps 결정:** FullOps 저장소의 에이전트 알림이 오면 그 저장소의 열린 결정(Git 공용 디렉터리의 `fullops-decisions/D*.json`) 가운데 봇으로 들어온 과제의 결정(`origin: bot`)을 워크스페이스가 맞는 봇마다 한 번씩 보냅니다. Orca 대화로 들어온 과제의 결정(`origin: user`)은 coordinator 대화에서 먼저 물으므로 보내지 않습니다. 주기 폴링은 없고, 보내지 못하면 다음 알림 때 다시 보내며, 답한 결정은 잊습니다. 형식 버전이 1이 아닌 기록은 보내지 않고 로그에 남깁니다. 반복 억제처럼 이 기록도 워커 메모리에만 있습니다. worker 질문(`question`), `escalation`, 병합 실패, 자동 승인 판정은 보내지 않습니다. 플러그인은 Orca orchestration 메시지를 읽을 수 없어서, 이런 사건은 coordinator 터미널의 상태 알림이나 coordinator가 연 결정으로만 사람에게 갑니다.
+- **FullOps 사건:** FullOps 저장소의 에이전트 알림이 오면 그 저장소에서 사람이 볼 사건을 찾아 워크스페이스가 맞는 봇마다 한 번씩 보냅니다. 주기 폴링은 없습니다. 판정과 승인 확인은 하지 않고 FullOps가 남긴 기록을 전달만 합니다.
+  - 봇으로 들어온 과제(`origin: bot`)의 열린 결정(`fullops-decisions/`)과 `ask`·`blocked` 판정(`fullops-autonomy/`)을 보냅니다. 만료된 결정은 답을 받을 수 없어 보내지 않습니다. 같은 커밋에 결정이 있으면 `ask` 판정은 결정 알림으로 대신합니다. Orca 대화로 들어온 과제(`origin: user`)는 coordinator 대화에서 먼저 물으므로 보내지 않습니다.
+  - 병합 보류(`fullops-integration/` 의 `hold`)와 worker의 `escalation`, 실패한 `worker_done`(`outcome: failed`)을 보냅니다. 이 기록에는 진입점이 없어 `origin` 과 관계없이 보냅니다.
+  - `auto` 판정은 기본으로 보내지 않습니다. `fullopsAuto` 설정을 켜면 보냅니다. `delay` 판정, worker `question`, 성공한 `worker_done` 은 coordinator가 처리하므로 보내지 않습니다.
+  - orchestration 메시지는 에이전트가 멈췄다고 알릴 때(`working` 이 아닐 때)만 `orca orchestration inbox` 로 읽습니다. 메시지를 소비하지 않으므로 coordinator가 받을 메시지에 영향이 없습니다. 저장소는 `worker-show` 의 workspace로 정합니다. dispatch가 없는 메시지는 저장소를 알 수 없어 보내지 않습니다.
+  - 같은 사건은 봇마다 한 번만 보냅니다. 보낸 기록은 플러그인 저장소(`storage:own`)에 남아 워커가 다시 떠도 유지됩니다. 보내지 못하면 다음 알림 때 다시 보내고, 닫힌 사건은 잊습니다. 24시간이 지난 판정·보류·메시지는 새 봇이나 새 설치에도 보내지 않습니다. 형식 버전이 1이 아닌 결정·판정은 보내지 않고 로그에 남깁니다.
+  - 질문·사유·본문 같은 자유 텍스트의 비밀값은 `tail` 과 같은 규칙으로 가립니다. `sha` 필드는 답할 때 필요하므로 그대로 둡니다.
 - **터미널 꼬리:** Orca 알림 훅은 마지막 응답을 주지 않으므로, 보낼 상태가 오면 워커가 `terminal.read` 로 터미널을 읽어 `tail` 에 싣습니다. `read --plain` 과 같은 규칙으로 입력창·푸터·사이드 패널을 걷어 내므로, 그 안의 카운터가 바뀌거나 창 크기가 바뀌어 줄이 다시 감겨도 새 출력으로 치지 않습니다. `working` 은 출력이 계속 바뀌므로 읽지 않고 상태만 비교합니다. 읽지 못하면(터미널 닫힘, 권한 미승인 등) 로그에 이유만 남기고 `tail` 없이 알림을 보냅니다. 더 앞의 내용은 `orca-helm read <repo>/<worktree> --plain` 으로 읽습니다.
 
 ### 보내는 JSON
@@ -256,7 +262,17 @@ Orca가 플러그인에 주는 알림 훅 `agent.status.changed` 를 받아 Grok
 `). ANSI와 TUI 장식을 뺀 끝쪽 약 1500자이고, 앞쪽은 줄 단위로 자르며, 비밀값은 마스킹합니다. 읽지 못했거나 비었거나 `working` 이면 `null`.
 - `needsInput`: `tail` 의 마지막 8줄에 질문·확인 요청이 있으면 `true`(불리언). LLM 없이 고정 규칙으로만 봅니다: 단어 바로 뒤의 `?` 또는 `？`, `까요`·`주세요` 로 끝나는 말, `(y/n)`·`[y/N]`. 힌트일 뿐이라 `false` 가 사람 확인이 필요 없다는 보장은 아닙니다.
 
-FullOps 결정 알림은 `event` 가 `fullops.decision` 입니다. 터미널 상태 알림(`agent.status.changed`, 예: `done`)은 그 터미널의 에이전트가 멈췄다는 뜻일 뿐이고, FullOps 작업이 끝났는지는 알려 주지 않습니다. `fullops.decision` 은 사람이 답해야 하는 결정입니다.
+터미널 상태와 FullOps 사건은 `event` 로 구분합니다. `agent.status.changed`(예: `done`)는 그 터미널의 에이전트가 멈췄다는 뜻일 뿐이고, FullOps 작업이 끝났는지는 알려 주지 않습니다. `fullops.*` 는 FullOps가 남긴 기록이나 worker 메시지에서 온 사건입니다.
+
+| `event` | 뜻 | 사람이 할 일 |
+| --- | --- | --- |
+| `fullops.decision` | 결정 대기 | `reply` 명령으로 답합니다 |
+| `fullops.judgment` | 병합 판정(`grade`, `blocked`, `blockers`, `reasons`, `key`, `sha`). 지금은 섀도 모드라 병합 흐름을 바꾸지 않습니다 | 확인합니다. 답할 결정이 있으면 `fullops.decision` 이 따로 옵니다 |
+| `fullops.hold` | 병합 보류(`reason`, `owner`, `resume`, `key`, `sha`) | 재개 조건을 확인합니다 |
+| `fullops.escalation` | worker가 막힘(`subject`, `body`, `messageId`, `sentAt`) | coordinator에 지시합니다 |
+| `fullops.failed` | worker가 실패를 보고함(`fullops.escalation` 과 같은 필드) | coordinator에 지시합니다 |
+
+모든 `fullops.*` 알림에는 한 줄 요약 `text` 와 `repo`, `worktree`, `branch`, `route`, `host` 가 있습니다. `worktree`, `branch` 는 알림을 일으킨 에이전트의 것이며 사건을 만든 worker의 것이 아닐 수 있습니다. 결정 알림은 이렇게 생겼습니다.
 
 ```json
 {
@@ -272,7 +288,7 @@ FullOps 결정 알림은 `event` 가 `fullops.decision` 입니다. 터미널 상
 }
 ```
 
-- `decision`: FullOps가 쓴 결정 기록 그대로(형식은 FullOps `events.md`). 비밀값은 들어 있지 않습니다.
+- `decision`: FullOps가 쓴 결정 기록(형식은 FullOps `events.md`). 자유 텍스트의 비밀값은 가립니다.
 - `reply`: 답할 명령. `<answer>` 는 선택지 가운데 하나, `<who>` 는 실제로 답한 사람의 식별자입니다(`allow` 에서 골라 넣지 않습니다). 답한 뒤에는 coordinator에 알립니다.
 
 ### 설정
@@ -286,6 +302,7 @@ Orca **Settings** 에서 이 플러그인 아래에 보입니다.
 | `authValue` | Authorization value | `routes` 에 올바른 줄이 없을 때만: 위 URL의 Authorization 값. 붙여 넣으면 워커가 바로 secrets로 옮기고 칸을 비웁니다(옮길 수 없으면 칸에 남은 값으로 보냅니다) |
 | `states` | States | 넘길 상태, 쉼표로 구분. 기본 `done,waiting,blocked` |
 | `remindMinutes` | Reminder minutes | 바뀌지 않은 상태를 리마인드로 한 번 더 보내기까지 이어져야 하는 분. `0` 이면 다시 보내지 않음. 기본 `30` |
+| `fullopsAuto` | Send FullOps auto judgments | 봇으로 들어온 과제의 `auto` 판정도 보냅니다. 기본 `false` |
 
 ### 핸들러
 
@@ -315,8 +332,9 @@ Grok Bot 패널은 `plugin.request` 로 `routes.*` 를 부릅니다. 명령줄�
 | `terminal:read` | 알림의 `tail` 을 만들 때 그 터미널의 출력 읽기(Orca 1.4.248부터) |
 | `settings:own` | 자기 설정 읽기, `auth.set` 저장, Authorization 값을 `(saved)` 로 바꾸거나 칸 비우기 |
 | `secrets:own` | Authorization 값 저장·읽기 |
+| `storage:own` | 이미 보낸 FullOps 사건 기록 |
 
-`terminal:read` 는 이전 버전에 없던 권한이라, 업데이트하면 Orca에서 다시 승인해야 합니다. 터미널 입력, 에이전트 실행 권한은 요청하지 않습니다. 플러그인은 Grok Bot에 알림만 보내고, Orca를 조작하는 일은 CLI가 합니다. Grok Bot 패널(`plugins/grokbot-notify/panel/routes.tsx`, components 패널)은 따로 권한을 쓰지 않고 워커에만 요청합니다.
+`storage:own` 은 이전 버전에 없던 권한이라, 업데이트하면 Orca에서 다시 승인해야 합니다. 터미널 입력, 에이전트 실행 권한은 요청하지 않습니다. 플러그인은 Grok Bot에 알림만 보내고, Orca를 조작하는 일은 CLI가 합니다. Grok Bot 패널(`plugins/grokbot-notify/panel/routes.tsx`, components 패널)은 따로 권한을 쓰지 않고 워커에만 요청합니다.
 
 ### 개발과 배포
 

@@ -4,7 +4,7 @@
   "id": "grokbot-notify",
   "name": "Grok Bot Notify",
   "version": "0.6.0",
-  "description": "Hands Orca's agent alerts (done, waiting, blocked) from Orca's agent.status.changed hook to Grok Bot. The alert half of orca-helm.",
+  "description": "Hands Orca's agent alerts (done, waiting, blocked) and FullOps events for a person (decisions, ask judgments, holds, failures, escalations) to Grok Bot. The alert half of orca-helm.",
   "license": "MIT",
   "repository": "https://github.com/tourbut/orca-helm",
   "author": {
@@ -69,6 +69,13 @@
         "type": "integer",
         "default": 30,
         "minimum": 0
+      },
+      {
+        "key": "fullopsAuto",
+        "title": "Send FullOps auto judgments",
+        "description": "Also hand a bot-started task's FullOps auto judgment to Grok Bot. Decisions, ask judgments, holds, failures and escalations always go.",
+        "type": "boolean",
+        "default": false
       }
     ]
   },
@@ -87,6 +94,9 @@
     },
     {
       "kind": "secrets:own"
+    },
+    {
+      "kind": "storage:own"
     }
   ]
 }
