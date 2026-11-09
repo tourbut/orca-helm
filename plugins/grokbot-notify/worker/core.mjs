@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { plainLines } from '../../../lib/core.mjs'
 
 const VALID_STATES = new Set(['working', 'blocked', 'waiting', 'done'])
 const DEFAULT_STATES = ['done', 'waiting', 'blocked']
@@ -18,12 +19,12 @@ export function parseStates(str) {
 const MAX_TERMINALS = 200
 
 /**
- * Repeat check per terminal: a state goes out only when it differs from the terminal's last one. The same state
- * again is held back (agents re-report `waiting` every minute or so), except once as a reminder when it has lasted
- * `remindMs`; 0 never reminds. Terminal ids are never reused, so a new terminal starts with no record.
+ * Repeat check per terminal: a state goes out only when it or the terminal's tail differs from the last one. The same
+ * state and tail again is held back (agents re-report `waiting` every minute or so), except once as a reminder when it
+ * has lasted `remindMs`; 0 never reminds. Terminal ids are never reused, so a new terminal starts with no record.
  */
 export function createDebouncer() {
-  /** @type {Map<string, { state: string, at: number, reminded: boolean }>} */
+  /** @type {Map<string, { state: string, tailKey: string | null, at: number, reminded: boolean }>} */
   const last = new Map()
 
   /**
@@ -31,10 +32,11 @@ export function createDebouncer() {
    * @param {string} state
    * @param {number} nowMs
    * @param {number} remindMs
+   * @param {string | null} [tailKey] null when the tail is unknown, which says nothing about whether it changed
    */
-  function shouldSend(key, state, nowMs, remindMs) {
+  function shouldSend(key, state, nowMs, remindMs, tailKey = null) {
     const prev = last.get(key)
-    if (prev?.state === state) {
+    if (prev?.state === state && (tailKey === null || tailKey === prev.tailKey)) {
       if (prev.reminded || !(remindMs > 0) || nowMs - prev.at < remindMs) return false
       prev.reminded = true
       return true
@@ -42,7 +44,7 @@ export function createDebouncer() {
     // Map order is insertion order, so the first key is the terminal whose state changed longest ago.
     last.delete(key)
     if (last.size >= MAX_TERMINALS) last.delete(last.keys().next().value)
-    last.set(key, { state, at: nowMs, reminded: false })
+    last.set(key, { state, tailKey, at: nowMs, reminded: false })
     return true
   }
   /** A delivery of `state` failed: forget it, so the next report tries again. A newer state is kept. */
@@ -237,11 +239,45 @@ function summary(repo, worktree, state, outcome, title) {
   return `${label}: ${state ?? 'unknown'}${outcome ? ` (${outcome})` : ''}${title ? ` - ${title}` : ''}`
 }
 
+const TAIL_CHARS = 1500
+
+/**
+ * shortcut: a token the terminal wrapped is matched line by line, so a short last piece can stay; rejoin lines if that shows up.
+ */
+export function maskSecrets(str) {
+  return String(str)
+    .replace(/\bBearer[ \t]+\S+/gi, 'Bearer [REDACTED]')
+    .replace(/\b(?:sk-|gh[pousr]_|github_pat_)[A-Za-z0-9_-]{8,}/g, '[REDACTED]')
+    .replace(/\b[a-f0-9]{32,}\b/gi, '[REDACTED]')
+    // Only with mixed case and a digit: long paths and words have no such mix.
+    .replace(/[A-Za-z0-9+/_-]{32,}={0,2}/g, (found) => (/[a-z]/.test(found) && /[A-Z]/.test(found) && /\d/.test(found) ? '[REDACTED]' : found))
+}
+
+/**
+ * Terminal lines to the end of the conversation: no ANSI or TUI chrome (their counters would look like new output on
+ * every report), secrets masked before cutting so the cut cannot hide a token's prefix, whole lines. Null when empty.
+ */
+export function tailText(lines) {
+  const masked = maskSecrets(plainLines(lines).join('\n'))
+  if (masked.length > TAIL_CHARS) return masked.slice(-TAIL_CHARS).replace(/^[^\n]*\n/, '')
+  return masked || null
+}
+
+// `?` right after a word (not a ternary's ` ? `), a Korean question or request ending, or a y/n prompt.
+const ASKS = /[^\s?]\?(?:\s|$)|？|(?:까요|주세요)[.!]?(?:\s|$)|[([]y\/n[)\]]/i
+// Agents often add a closing note after the question, so the last line alone would miss it.
+const ASK_LINES = 8
+
+/** A hint only, by fixed rules: one of the tail's last lines asks something. False means no rule matched. */
+export function tailNeedsInput(tail) {
+  return String(tail ?? '').split('\n').filter((line) => line.trim()).slice(-ASK_LINES).some((line) => ASKS.test(line))
+}
+
 /**
  * @param {Record<string, unknown>} event
- * @param {{ worktree?: string | null, branch?: string | null, repo?: string | null, route?: string | null, host?: string | null }} extra
+ * @param {{ worktree?: string | null, branch?: string | null, repo?: string | null, route?: string | null, host?: string | null, tail?: string | null }} extra
  */
-export function buildPayload(event, { worktree, branch, repo, route, host }) {
+export function buildPayload(event, { worktree, branch, repo, route, host, tail }) {
   const mainAgent = event?.mainAgent && typeof event.mainAgent === 'object' ? event.mainAgent : null
   const state = event?.state ?? null
   const outcome = mainAgent?.outcome ?? null
@@ -261,5 +297,7 @@ export function buildPayload(event, { worktree, branch, repo, route, host }) {
     route: route ?? null,
     receivedAt: typeof event?.receivedAt === 'number' ? new Date(event.receivedAt).toISOString() : null,
     host: host ?? null,
+    tail: tail ?? null,
+    needsInput: tailNeedsInput(tail),
   }
 }

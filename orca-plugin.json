@@ -11,7 +11,7 @@
     "name": "tourbut"
   },
   "engines": {
-    "orca": ">=1.4.246"
+    "orca": ">=1.4.248"
   },
   "pluginApi": 1,
   "main": "plugins/grokbot-notify/worker/main.mjs",
@@ -65,7 +65,7 @@
       {
         "key": "remindMinutes",
         "title": "Reminder minutes",
-        "description": "A terminal's state is sent only when it changes. When the same state is reported again after lasting this many minutes, it is sent once more as a reminder. 0 never reminds.",
+        "description": "A terminal's state is sent only when it or the terminal's last output changes. When the same state and output are reported again after lasting this many minutes, they are sent once more as a reminder. 0 never reminds.",
         "type": "integer",
         "default": 30,
         "minimum": 0
@@ -78,6 +78,9 @@
     },
     {
       "kind": "workspace:read"
+    },
+    {
+      "kind": "terminal:read"
     },
     {
       "kind": "settings:own"
