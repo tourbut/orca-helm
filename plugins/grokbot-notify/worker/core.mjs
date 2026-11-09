@@ -85,15 +85,34 @@ export function gitCommonDir(worktreePath, gitFile) {
 // FullOps decision records this plugin reads (FullOps docs/events.md). A missing version is a record from before it: 1.
 export const DECISION_VERSION = 1
 
+/** Every string of a FullOps record masked, except the commit id a person answers with. Free text can quote anything. */
+function maskRecord(value, key) {
+  if (typeof value === 'string') return key === 'sha' && /^[0-9a-f]{7,40}$/i.test(value) ? value : maskSecrets(value)
+  if (Array.isArray(value)) return value.map((entry) => maskRecord(entry))
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([name, entry]) => [name, maskRecord(entry, name)]))
+  return value
+}
+
+const fullopsLabel = ({ repo, worktree }) => repo || worktree || 'Orca'
+const fullopsPlace = ({ repo, worktree, branch, route, host }) => ({
+  repo: repo ?? null,
+  worktree: worktree ?? null,
+  branch: branch ?? null,
+  route: route ?? null,
+  host: host ?? null,
+})
+const shortSha = (sha) => (sha ? String(sha).slice(0, 12) : null)
+
 /** A FullOps decision waiting for a person: the record as FullOps wrote it, one relayable line, and how to answer. */
-export function decisionPayload(item, { repo, worktree, branch, route, host }) {
-  const label = repo || worktree || 'Orca'
+export function decisionPayload(record, where) {
+  const item = maskRecord(record)
+  const label = fullopsLabel(where)
   const options = Array.isArray(item.options) && item.options.length ? ` [${item.options.join(' / ')}]` : ''
   // What a person needs to judge it, in the line a routine relays as is.
   const facts = [
     Array.isArray(item.risks) && item.risks.length ? `risks: ${item.risks.join(', ')}` : null,
     item.blocks ? `blocks: ${item.blocks}` : null,
-    item.sha ? `sha: ${String(item.sha).slice(0, 12)}` : null,
+    item.sha ? `sha: ${shortSha(item.sha)}` : null,
     item.expires_at ? `until: ${item.expires_at}` : null,
   ].filter(Boolean)
   return {
@@ -101,11 +120,68 @@ export function decisionPayload(item, { repo, worktree, branch, route, host }) {
     text: `${label}/${item.id}: decision waiting - ${item.question ?? ''}${options}${facts.length ? ` (${facts.join('; ')})` : ''}`,
     decision: item,
     reply: `orca-helm decide ${label}/${item.id}${item.sha ? ` --sha ${item.sha}` : ''} --answer <answer> --by <who>`,
-    repo: repo ?? null,
-    worktree: worktree ?? null,
-    branch: branch ?? null,
-    route: route ?? null,
-    host: host ?? null,
+    ...fullopsPlace(where),
+  }
+}
+
+/** A merge judged by FullOps autonomy.py. Nothing to answer: a decision, when one is needed, comes as fullops.decision. */
+export function judgmentPayload(record, where) {
+  const { grade, blocked, blockers, reasons, key, sha } = maskRecord({
+    grade: record.grade ?? null,
+    blocked: Boolean(record.blocked),
+    blockers: record.blockers ?? [],
+    reasons: record.reasons ?? [],
+    key: record.key ?? null,
+    sha: record.head ?? null,
+  })
+  const why = [...blockers, ...reasons].join('; ')
+  return {
+    event: 'fullops.judgment',
+    text: `${fullopsLabel(where)}: ${key ?? 'merge'} judged ${grade}${blocked ? ', blocked' : ''}${why ? ` - ${why}` : ''}${sha ? ` (sha: ${shortSha(sha)})` : ''}`,
+    grade,
+    blocked,
+    blockers,
+    reasons,
+    key,
+    sha,
+    ...fullopsPlace(where),
+  }
+}
+
+/** A finished task the coordinator could not merge: FullOps integration.py hold. */
+export function holdPayload(record, where) {
+  const { key, sha, reason, owner, resume } = maskRecord({
+    key: record.key || null,
+    sha: record.sha || null,
+    reason: record.hold.reason ?? null,
+    owner: record.hold.owner ?? null,
+    resume: record.hold.resume ?? null,
+  })
+  return {
+    event: 'fullops.hold',
+    text: `${fullopsLabel(where)}: ${key ?? 'merge'} on hold - ${reason ?? ''} (owner: ${owner ?? '?'}; resume: ${resume ?? '?'})`,
+    key,
+    sha,
+    reason,
+    owner,
+    resume,
+    ...fullopsPlace(where),
+  }
+}
+
+/** A worker's `escalation` or failed `worker_done`, from Orca's orchestration messages. */
+export function messagePayload(message, where) {
+  const failed = message.type === 'worker_done'
+  const { subject, body } = maskRecord({ subject: message.subject ?? null, body: message.body ?? null })
+  return {
+    event: failed ? 'fullops.failed' : 'fullops.escalation',
+    text: `${fullopsLabel(where)}: ${failed ? 'worker failed' : 'escalation'}${subject ? ` - ${subject}` : ''}`,
+    subject,
+    // Masked before the cut, so the cut cannot hide a token's prefix.
+    body: body && body.slice(0, TAIL_CHARS),
+    messageId: message.id ?? null,
+    sentAt: message.created_at ?? null,
+    ...fullopsPlace(where),
   }
 }
 

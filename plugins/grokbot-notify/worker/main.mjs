@@ -3,14 +3,18 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
+import { runOrca } from '../../../lib/orca.mjs'
 import {
   DECISION_VERSION,
   buildPayload,
   createDebouncer,
   decisionPayload,
   gitCommonDir,
+  holdPayload,
   isHttpUrl,
+  judgmentPayload,
   matchesWorkspace,
+  messagePayload,
   parseRoutes,
   parseStates,
   removeRouteLines,
@@ -30,6 +34,10 @@ const READ_MS = 3_000
 const READ_LINES = 200
 // The single routine from before routes; its Authorization field and secret share this key.
 const SINGLE_AUTH_KEY = 'authValue'
+const SENT_KEY = 'fullopsSent'
+const ORCA_MS = 10_000
+// Older FullOps records are history, not news: they keep their files, and a new route or install must not replay them.
+const RECENT_MS = 24 * 60 * 60_000
 
 function errText(err) {
   return err?.message ?? String(err)
@@ -175,36 +183,107 @@ const gitFileOf = (worktreePath) => {
 
 const isFullOps = (worktreePath) => Boolean(worktreePath) && fs.existsSync(path.join(worktreePath, '.fullops-squad', 'fullops.json'))
 
-/**
- * Open FullOps decisions of a bot-started task (`origin: bot`), from the repo's Git common directory. Decisions
- * asked in the Orca coordinator chat (`origin: user`) are asked there first, so they are not sent.
- */
-function botDecisions(orca, worktreePath, warned) {
-  const common = gitCommonDir(worktreePath, gitFileOf(worktreePath))
-  const dir = path.join(common, 'fullops-decisions')
+/** The JSON records in a FullOps folder of the Git common directory. A half-written one is read at the next alert. */
+function readRecords(dir) {
   let names = []
   try {
-    names = fs.readdirSync(dir).filter((name) => /^D\d+\.json$/.test(name))
+    names = fs.readdirSync(dir).filter((name) => name.endsWith('.json'))
   } catch {
-    return { common, decisions: [] }
+    return []
   }
-  const decisions = []
+  const records = []
   for (const name of names) {
-    let item
+    const file = path.join(dir, name)
     try {
-      item = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'))
+      const item = JSON.parse(fs.readFileSync(file, 'utf8'))
+      if (item) records.push({ name: name.slice(0, -'.json'.length), item, at: fs.statSync(file).mtimeMs })
     } catch {
-      continue // FullOps writes a record in one go; a half-written one is read at the next alert
-    }
-    if (item?.status !== 'open' || item.origin !== 'bot') continue
-    if ((item.version ?? 1) !== DECISION_VERSION) {
-      if (!warned.has(`${common}#${item.id}`)) orca.log(`FullOps decision ${item.id} is format version ${item.version}; update grokbot-notify to send it`)
-      warned.add(`${common}#${item.id}`)
       continue
     }
-    decisions.push(item)
   }
-  return { common, decisions }
+  return records
+}
+
+/**
+ * What FullOps left for a person in the repo's Git common directory (its events.md): open decisions and `ask`/blocked
+ * judgments of a bot-started task, and merge holds. A user-started task's decisions and judgments are asked in the
+ * Orca coordinator chat first, so they are not sent; a hold names no origin, so it always is.
+ */
+function recordAlerts(orca, common, settings, warned) {
+  const now = Date.now()
+  const current = (item, what) => {
+    if ((item.version ?? 1) === DECISION_VERSION) return true
+    if (!warned.has(`${common}#${what}`)) orca.log(`FullOps ${what} is format version ${item.version}; update grokbot-notify to send it`)
+    warned.add(`${common}#${what}`)
+    return false
+  }
+  const alerts = []
+  const decisions = readRecords(path.join(common, 'fullops-decisions')).filter(({ name }) => /^D\d+$/.test(name)).map(({ item }) => item)
+  for (const item of decisions) {
+    if (item.status !== 'open' || item.origin !== 'bot' || !current(item, `decision ${item.id}`)) continue
+    // FullOps refuses an answer past this and asks again, in a new decision.
+    if (item.expires_at && Date.parse(item.expires_at) <= now) continue
+    alerts.push({ id: item.id, payload: (where) => decisionPayload(item, where) })
+  }
+  // A decision on the same commit already asks the person; only a block still adds something.
+  const decided = new Set(decisions.filter((item) => item.sha).map((item) => `${item.key}#${item.sha}`))
+  for (const { name, item, at } of readRecords(path.join(common, 'fullops-autonomy'))) {
+    if (now - at > RECENT_MS || item.origin !== 'bot') continue
+    const wanted = item.blocked || (item.grade === 'ask' && !decided.has(`${item.key}#${item.head}`)) || (item.grade === 'auto' && settings.fullopsAuto === true)
+    if (!wanted || !current(item, `judgment ${name}`)) continue
+    alerts.push({ id: `judgment:${name}:${item.grade}:${Boolean(item.blocked)}`, payload: (where) => judgmentPayload(item, where) })
+  }
+  for (const { name, item, at } of readRecords(path.join(common, 'fullops-integration'))) {
+    if (now - at > RECENT_MS || !item.hold || typeof item.hold !== 'object' || item.integrated) continue
+    alerts.push({ id: `hold:${name}`, payload: (where) => holdPayload(item, where) })
+  }
+  return alerts
+}
+
+const messageFields = (payload) => {
+  if (payload && typeof payload === 'object') return payload
+  try {
+    return JSON.parse(payload) ?? {}
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * This repo's recent `escalation` and failed `worker_done` messages. `inbox` only reads, so the coordinator still gets
+ * its mail. `complete` is false when some message could not be read or placed, so what was sent must stay remembered.
+ * shortcut: a message with no dispatch (never a supervised worker's) cannot be tied to a repo and is not sent; send it by repo if FullOps starts using those.
+ */
+async function messageAlerts(orca, repoId, placed, warned) {
+  let messages
+  try {
+    ;({ messages } = await runOrca(['orchestration', 'inbox', '--limit', '100', '--full'], { timeout: ORCA_MS }))
+  } catch (err) {
+    if (!warned.has('inbox')) orca.log(`could not read Orca messages: ${errText(err)}`)
+    warned.add('inbox')
+    return { alerts: [], complete: false }
+  }
+  warned.delete('inbox')
+  const now = Date.now()
+  const alerts = []
+  let complete = true
+  for (const message of messages ?? []) {
+    const fields = messageFields(message.payload)
+    if (message.type !== 'escalation' && (message.type !== 'worker_done' || fields.outcome !== 'failed')) continue
+    if (!(now - Date.parse(message.created_at) <= RECENT_MS) || !fields.dispatchId) continue
+    if (!placed.has(fields.dispatchId)) {
+      try {
+        const { workspace } = await runOrca(['orchestration', 'worker-show', '--dispatch', fields.dispatchId], { timeout: ORCA_MS })
+        placed.set(fields.dispatchId, String(workspace ?? '').split('::')[0])
+      } catch {
+        complete = false
+        continue
+      }
+    }
+    if (placed.get(fields.dispatchId) !== repoId) continue
+    alerts.push({ id: `msg:${message.id}`, payload: (where) => messagePayload(message, where) })
+  }
+  return { alerts, complete }
 }
 
 /** Every workspace's repo name (or its own name) for the panel's checkboxes. */
@@ -343,48 +422,81 @@ export default async function activate(orca) {
     }
   }
 
-  /** FullOps decisions already delivered per route, as `<git common dir>#<id>`; version warnings given. */
+  /** FullOps alerts already delivered per route, as `<git common dir>#<id>`. Kept in the store: Orca stops an idle worker. */
   const announced = new Map()
   const warned = new Set()
+  /** Dispatch id to repo id; a dispatch stays in its workspace. */
+  const placed = new Map()
+  try {
+    for (const [route, keys] of Object.entries((await orca.storage.get(SENT_KEY)) ?? {})) announced.set(route, new Set(keys))
+  } catch (err) {
+    orca.log(`could not read the sent FullOps alerts: ${errText(err)}`)
+  }
+  async function saveAnnounced() {
+    try {
+      await orca.storage.set(SENT_KEY, Object.fromEntries([...announced].map(([route, keys]) => [route, [...keys]])))
+    } catch (err) {
+      orca.log(`could not save the sent FullOps alerts: ${errText(err)}`)
+    }
+  }
 
   /**
-   * Issue #2: each open FullOps decision of a bot-started task goes once to every route whose workspaces match. The
-   * records are read when Orca reports an agent of that repo, so nothing polls. A failed delivery is tried again.
+   * Issue #2: each FullOps event for a person goes once to every route whose workspaces match. Everything is read when
+   * Orca reports an agent of that repo, so nothing polls; a worker that escalates or fails then settles, so messages
+   * are read only when an agent settles. A failed delivery is tried again at the next report.
    */
-  async function forwardDecisions(event) {
+  async function forwardFullOps(event) {
     try {
       // A local worktree's id is `<repoId>::<path>`: skip the host call for repos without FullOps.
-      const idPath = String(event.workspaceId ?? '').split('::')[1]
+      const [repoId, idPath] = String(event.workspaceId ?? '').split('::')
       if (idPath && !isFullOps(idPath)) return []
       const info = await workspaceInfo(orca, event.workspaceId)
       if (!isFullOps(info.path)) return []
-      const { common, decisions } = botDecisions(orca, info.path, warned)
-      const open = new Set(decisions.map((item) => `${common}#${item.id}`))
-      const routes = readRoutes(await readSettings(orca)).filter((route) => matchesWorkspace(route.workspaces, info))
+      const settings = await readSettings(orca)
+      const routes = readRoutes(settings).filter((route) => matchesWorkspace(route.workspaces, info))
+      if (routes.length === 0) return []
+      const common = gitCommonDir(info.path, gitFileOf(info.path))
+      const alerts = recordAlerts(orca, common, settings, warned)
+      let messagesRead = false
+      if (idPath && event.state !== 'working') {
+        const read = await messageAlerts(orca, repoId, placed, warned)
+        alerts.push(...read.alerts)
+        messagesRead = read.complete
+      }
+      const live = new Set(alerts.map((alert) => `${common}#${alert.id}`))
       const results = []
+      let changed = false
       for (const route of routes) {
         const sent = announced.get(route.key) ?? announced.set(route.key, new Set()).get(route.key)
-        for (const key of sent) if (key.startsWith(`${common}#`) && !open.has(key)) sent.delete(key) // closed since
-        for (const item of decisions) {
-          const key = `${common}#${item.id}`
+        for (const key of sent) {
+          // Closed or aged out since. Messages not read this time are not known to be gone.
+          if (key.startsWith(`${common}#`) && !live.has(key) && (messagesRead || !key.startsWith(`${common}#msg:`))) {
+            sent.delete(key)
+            changed = true
+          }
+        }
+        for (const alert of alerts) {
+          const key = `${common}#${alert.id}`
           if (sent.has(key)) continue
           sent.add(key)
-          const payload = decisionPayload(item, { repo: info.repo, worktree: info.name, branch: info.branch, route: route.name, host: os.hostname() })
+          const payload = alert.payload({ repo: info.repo, worktree: info.name, branch: info.branch, route: route.name, host: os.hostname() })
           const status = await deliver(orca, route, payload, await authFor(orca, route))
-          if (!(status >= 200 && status < 300)) sent.delete(key)
-          results.push({ route: route.name, decision: item.id, status })
+          if (status >= 200 && status < 300) changed = true
+          else sent.delete(key)
+          results.push({ route: route.name, alert: alert.id, status })
         }
       }
+      if (changed) await saveAnnounced()
       return results
     } catch (err) {
-      orca.log(`FullOps decision forward failed: ${errText(err)}`)
+      orca.log(`FullOps alert forward failed: ${errText(err)}`)
       return []
     }
   }
 
   orca.events.on('agent.status.changed', async (event) => {
     const result = await forward(event)
-    await forwardDecisions(event)
+    await forwardFullOps(event)
     return result
   })
 

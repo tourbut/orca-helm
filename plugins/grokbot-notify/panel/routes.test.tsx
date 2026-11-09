@@ -13,9 +13,9 @@ const workspaces = {
 }
 
 test('a bot is added, edited and deleted with fields and checkboxes; its Authorization only reaches secrets', async () => {
-  // The manifest's capabilities: workspace:read for workspace.list, settings:own and secrets:own.
+  // The manifest's capabilities: workspace:read for workspace.list, settings:own, secrets:own and storage:own.
   const host = mockHost({
-    capabilities: ['agent:read', 'workspace:read', 'settings:own', 'secrets:own'],
+    capabilities: ['agent:read', 'workspace:read', 'settings:own', 'secrets:own', 'storage:own'],
     results: { 'workspace.list': workspaces },
     settings: { routes: '' },
   })
