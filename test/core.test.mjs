@@ -325,6 +325,8 @@ test('plainLines drops TUI chrome and keeps the conversation', () => {
     '  Read 1 file, ran 5 shell commands',
     '✻ Churned for 4m 48s · done 10:42 PM',
     '✻ Cogitated for 7m 9s · done 12:33 AM',
+    '✽ Topsy-turvying… (57m 33s · ↓ 232.5k tokens)',
+    `${' '.repeat(20)}new task? /clear to save 179.2k tokens · ✔ Update installed · Restart to update`,
     '※ recap: tightened the check',
     '  (disable recaps in /config)',
     '※ recap: The three failed',
@@ -371,6 +373,24 @@ test('plainLines keeps the main column and strips borders and ANSI', () => {
     ]),
     ['● hello', 'keep me', 'inside'],
   )
+})
+
+test('plainLines cuts a side panel at its column, Hangul width included, and keeps tables and quotes', () => {
+  // The panel's bar sits at one terminal column though the lines differ in characters.
+  const row = (left, right) => `${left}${' '.repeat(40 - left.length - (left.match(/[가-힣]/g)?.length ?? 0))}│${right}`
+  assert.deepEqual(
+    plainLines([
+      row('● 병합할까요?', '[ Workers ][ Reviews ]'),
+      row('', 'No Orca run is bound to this session.'),
+      row('  두 번째 줄입니다.', '✖ Stop blocked · 0:06 · 56m ago'),
+      row('  third line', ''),
+    ]),
+    ['● 병합할까요?', '', '  두 번째 줄입니다.', '  third line'],
+  )
+  // A table's right border is such a column: its other cells stay.
+  assert.deepEqual(plainLines(['  │ repo        │ done │', '  │ shop        │ 3    │']), ['  │ repo        │ done', '  │ shop        │ 3'])
+  // A quote's gutter is too far left to be a panel.
+  assert.deepEqual(plainLines(['  │ quoted text', '  │ more quoted text']), ['quoted text', 'more quoted text'])
 })
 
 test('plainLines keeps content lines: brackets, text after a box, prose, words in a box', () => {

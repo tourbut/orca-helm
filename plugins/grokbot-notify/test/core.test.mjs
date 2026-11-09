@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import { parseStates, createDebouncer, buildPayload, repoNameFromGit, gitCommonDir, parseWorkspaces, matchesWorkspace, parseRoutes, routeLine, upsertRouteLine, removeRouteLines, routeProblem, workspaceOptions } from '../worker/core.mjs'
+import { parseStates, createDebouncer, buildPayload, repoNameFromGit, gitCommonDir, parseWorkspaces, matchesWorkspace, parseRoutes, routeLine, upsertRouteLine, removeRouteLines, routeProblem, workspaceOptions, maskSecrets, tailNeedsInput, tailText } from '../worker/core.mjs'
 
 test('parseStates defaults when empty or invalid', () => {
   assert.deepEqual([...parseStates('')].sort(), ['blocked', 'done', 'waiting'])
@@ -31,6 +31,70 @@ test('debouncer sends a state only when it changes, plus one reminder once it ha
   for (let i = 0; i <= 200; i++) many(`t${i}`, 'done', i, 0)
   assert.equal(many('t0', 'done', 300, 0), true)
   assert.equal(many('t200', 'done', 300, 0), false)
+})
+
+test('debouncer sends the same state again only when the tail changed', () => {
+  const shouldSend = createDebouncer()
+  assert.equal(shouldSend('t', 'done', 0, 0, 'a'), true)
+  assert.equal(shouldSend('t', 'done', 1, 0, 'a'), false)
+  assert.equal(shouldSend('t', 'done', 2, 0, 'b'), true)
+  // An unreadable tail says nothing changed, and a read that works again compares with the last known one.
+  assert.equal(shouldSend('t', 'done', 3, 0, null), false)
+  assert.equal(shouldSend('t', 'done', 4, 0, 'b'), false)
+  // New output restarts the reminder clock.
+  const remind = createDebouncer()
+  remind('t', 'waiting', 0, 100, 'a')
+  assert.equal(remind('t', 'waiting', 90, 100, 'b'), true)
+  assert.equal(remind('t', 'waiting', 110, 100, 'b'), false)
+  assert.equal(remind('t', 'waiting', 190, 100, 'b'), true)
+})
+
+test('maskSecrets hides common tokens and leaves ordinary text', () => {
+  const hex = 'ab12'.repeat(10)
+  const b64 = 'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0fI+/x='
+  assert.equal(
+    maskSecrets(`Authorization: Bearer s3cret\nkey=sk-ant-api03-abc_DEF-123 ghp_abcdefghij0123 commit ${hex}\n${b64}`),
+    'Authorization: Bearer [REDACTED]\nkey=[REDACTED] [REDACTED] commit [REDACTED]\n[REDACTED]'
+  )
+  for (const kept of ['task-management risk-free-option', 'plugins/grokbot-notify/worker/core/worker/core/main', '4f8233dd-206d-467d-a10c-69c14eb57e14', 'release 1.21.0']) {
+    assert.equal(maskSecrets(kept), kept)
+  }
+})
+
+test('tailText keeps the conversation, masks, and cuts to about 1500 characters at a line start', () => {
+  const rule = '─'.repeat(40)
+  assert.equal(tailText(['\u001b[31m● 병합할까요?\u001b[0m', rule, '❯', rule, '  ⏵⏵ bypass permissions on · ctx 22% · 782k left']), '● 병합할까요?')
+  assert.equal(tailText([rule, '❯ draft', rule]), null)
+  assert.equal(tailText([]), null)
+
+  const long = tailText(['sk-abcdefgh12345678', ...Array.from({ length: 300 }, (_, i) => `line ${i}`)])
+  assert.ok(long.length <= 1500)
+  assert.ok(long.startsWith('line '))
+  assert.ok(long.endsWith('line 299'))
+  // Masked before the cut, so a cut through a token cannot leave its end without the prefix the mask needs.
+  const straddle = tailText([`ghp_${'x'.repeat(40)}`, 'y'.repeat(1490)])
+  assert.ok(!straddle.includes('xxxx'))
+})
+
+test('tailNeedsInput follows fixed rules over the last lines', () => {
+  // Issue #3: the question sits above a closing note.
+  assert.equal(tailNeedsInput(['1.21.0을 릴리스하고 #82의 P5를 체크할까요? 승인 범위가 병합까지여서 둘 다 하지 않았습니다.', '', '#82에는 측정이 남아 있습니다.'].join('\n')), true)
+  for (const asks of ['Do you want to proceed?', '바로 병합해서 푸시할까요', '지금 올리길 원하시면 말씀해 주세요.', 'Overwrite? [y/N]', '계속할까요？']) {
+    assert.equal(tailNeedsInput(asks), true, asks)
+  }
+  for (const says of ['테스트 통과. PR을 올렸습니다.', 'const a = b ? c : d', 'see a?b=1 and x?.y', '']) {
+    assert.equal(tailNeedsInput(says), false, says)
+  }
+  assert.equal(tailNeedsInput(null), false)
+  // A question further up is an old one.
+  assert.equal(tailNeedsInput(['할까요?', ...Array.from({ length: 8 }, (_, i) => `done ${i}`)].join('\n')), false)
+})
+
+test('buildPayload adds tail and needsInput and leaves the other fields', () => {
+  const plain = buildPayload({ state: 'done' }, {})
+  assert.deepEqual([plain.tail, plain.needsInput], [null, false])
+  const asked = buildPayload({ state: 'done' }, { tail: '릴리스할까요?' })
+  assert.deepEqual([asked.tail, asked.needsInput, asked.text], ['릴리스할까요?', true, 'Orca: done'])
 })
 
 test('buildPayload shape', () => {

@@ -18,6 +18,7 @@ import {
   routeLine,
   routeProblem,
   stripAuthPrefix,
+  tailText,
   text,
   upsertRouteLine,
   workspaceOptions,
@@ -25,6 +26,8 @@ import {
 
 const FETCH_MS = 10_000
 const RETRY_MS = 2_000
+const READ_MS = 3_000
+const READ_LINES = 200
 // The single routine from before routes; its Authorization field and secret share this key.
 const SINGLE_AUTH_KEY = 'authValue'
 
@@ -216,6 +219,21 @@ async function workspaceInfo(orca, workspaceId) {
   return { name: ws?.name ?? null, branch: ws?.branch ?? null, path: worktreePath, repo: repoOf(worktreePath) }
 }
 
+/** The terminal's tail, or null when it cannot be read: the alert goes without it. Output is never logged. */
+async function readTail(orca, terminalId) {
+  if (!terminalId || !orca.host?.has?.('terminal.read')) return null
+  try {
+    const { lines } = await orca.host.call('terminal.read', { terminalId, maxLines: READ_LINES }, { signal: AbortSignal.timeout(READ_MS) })
+    return tailText(lines)
+  } catch (err) {
+    orca.log(`could not read terminal output: ${err?.code ?? err?.name}`)
+    return null
+  }
+}
+
+// Without whitespace, and only the end, so a resized terminal re-wrapping or scrolling the same text is not new output.
+const tailKeyOf = (tail) => createHash('sha256').update(tail.replace(/\s+/g, '').slice(-500)).digest('hex')
+
 async function post(url, body, auth) {
   const headers = { 'Content-Type': 'application/json' }
   if (auth) headers.Authorization = auth
@@ -290,10 +308,14 @@ export default async function activate(orca) {
       const minutes = Number(settings.remindMinutes ?? 30)
       const remindMs = Math.max(0, Number.isFinite(minutes) ? minutes : 30) * 60_000
       const terminal = event.terminalId ?? event.paneKey
+      const wanted = test || parseStates(settings.states).has(event.state)
+      // `working` output changes all the time, so that state stays state-only even when `states` includes it.
+      const tail = wanted && !test && event.state !== 'working' ? await readTail(orca, event.terminalId) : null
+      const tailKey = tail && tailKeyOf(tail)
       const now = Date.now()
       // Every state is remembered per route, so done -> working -> done sends the second done.
-      const fresh = matched.filter((route) => debouncerFor(route.key)(terminal, event.state, now, remindMs))
-      if (!test && !parseStates(settings.states).has(event.state)) return { status: null, routes: [] }
+      const fresh = matched.filter((route) => debouncerFor(route.key)(terminal, event.state, now, remindMs, tailKey))
+      if (!wanted) return { status: null, routes: [] }
       const due = test ? matched : fresh
       if (due.length === 0) return { status: null, routes: [] }
 
@@ -306,6 +328,7 @@ export default async function activate(orca) {
             repo: where.repo,
             route: route.name,
             host: os.hostname(),
+            tail,
           })
           const status = await deliver(orca, route, payload, await authFor(orca, route))
           // An alert that did not get through was not sent: the next report of this state tries again.

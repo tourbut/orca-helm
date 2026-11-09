@@ -32,13 +32,15 @@ async function startStub(statuses) {
   return { url: `http://127.0.0.1:${server.address().port}/hook?token=t0ken`, received, close: () => server.close() }
 }
 
-function mockOrca(workspaces = []) {
+/** `terminals` maps a terminal id to its output lines; without it this Orca has no terminal.read. */
+function mockOrca(workspaces = [], terminals = null) {
   const settings = { states: 'done,waiting,blocked', remindMinutes: 30, webhookUrl: '', authValue: '' }
   const secrets = {}
   // Set fail.get / fail.set to make that secrets method throw, as Orca's store does without OS encryption.
   const fail = { get: false, set: false }
   const handlers = {}
   const logs = []
+  const reads = []
   let listener = null
   let onSettings = null
   const orca = {
@@ -47,9 +49,14 @@ function mockOrca(workspaces = []) {
     events: { on: (_event, fn) => (listener = fn) },
     panels: { handle: (name, fn) => (handlers[name] = fn) },
     host: {
-      has: (method) => method === 'workspace.list' || method === 'secrets.protection',
+      has: (method) => method === 'workspace.list' || method === 'secrets.protection' || (method === 'terminal.read' && Boolean(terminals)),
       call: async (method, params) => {
         if (method.startsWith('secrets.') && fail[method.slice('secrets.'.length)]) throw new Error('OS-backed encryption is unavailable')
+        if (method === 'terminal.read') {
+          reads.push(params.terminalId)
+          if (!terminals[params.terminalId]) throw Object.assign(new Error('gone'), { code: 'not_found' })
+          return { lines: terminals[params.terminalId], truncated: false }
+        }
         if (method === 'secrets.get') return { value: secrets[params.key] ?? null }
         if (method === 'secrets.set') return void (secrets[params.key] = params.value)
         if (method === 'secrets.delete') return void delete secrets[params.key]
@@ -60,8 +67,11 @@ function mockOrca(workspaces = []) {
       },
     },
   }
-  return { orca, settings, secrets, fail, handlers, logs, emit: (event) => listener(event), changeSettings: () => onSettings() }
+  return { orca, settings, secrets, fail, handlers, logs, reads, emit: (event) => listener(event), changeSettings: () => onSettings() }
 }
+
+/** Claude Code's screen: the reply, then a footer whose counters change on their own. */
+const screen = (reply, footer = 'ctx 22% · 782k left') => [...reply, '─'.repeat(40), '❯', '─'.repeat(40), `  ⏵⏵ bypass permissions on · ${footer}`]
 
 test('worker forwards done/waiting/blocked to the routine once, with auth, and retries a 503', async () => {
   const stub = await startStub([200, 200, 503, 200])
@@ -192,6 +202,67 @@ test('issue #1: a terminal that keeps reporting waiting gets one alert, then one
     assert.deepEqual(stub.received.map((r) => r.body.state), ['waiting', 'waiting', 'done'])
   } finally {
     Date.now = realNow
+    stub.close()
+  }
+})
+
+test('issue #3: an alert carries the masked tail, and the same state goes again only for new output', async () => {
+  const stub = await startStub([])
+  const terminals = { term1: screen(['\u001b[1m● 1.21.0을 릴리스할까요?\u001b[0m', '  Authorization: Bearer s3cret']) }
+  const { orca, settings, logs, reads, emit } = mockOrca([], terminals)
+  settings.webhookUrl = stub.url
+  const event = (state) => ({ workspaceId: null, paneKey: 'p', terminalId: 'term1', title: 'x', state, receivedAt: 1 })
+  try {
+    await activate(orca)
+    await emit(event('done'))
+    assert.equal(stub.received.at(-1).body.tail, '● 1.21.0을 릴리스할까요?\n  Authorization: Bearer [REDACTED]')
+    assert.equal(stub.received.at(-1).body.needsInput, true)
+    assert.equal(stub.received.at(-1).body.text, 'Orca: done - x')
+
+    // Only the footer's counters moved, or the same text re-wrapped in a resized terminal: not new output.
+    terminals.term1 = screen(['● 1.21.0을 릴리스할까요?', '  Authorization: Bearer s3cret'], 'ctx 23% · 781k left')
+    await emit(event('done'))
+    terminals.term1 = screen(['● 1.21.0을', '릴리스할까요?', '  Authorization:', 'Bearer s3cret'])
+    await emit(event('done'))
+    assert.equal(stub.received.length, 1)
+
+    terminals.term1 = screen(['● 2.0.0도 릴리스할까요?'])
+    await emit(event('done'))
+    assert.equal(stub.received.length, 2)
+    assert.equal(stub.received.at(-1).body.tail, '● 2.0.0도 릴리스할까요?')
+
+    // Issue #1 still holds: a waiting terminal whose output stands still gets one alert.
+    for (let i = 0; i < 3; i++) await emit(event('waiting'))
+    assert.equal(stub.received.length, 3)
+
+    // A state not handed over reads nothing, and neither does `working`, whose output never stands still.
+    settings.states = 'waiting'
+    reads.length = 0
+    await emit(event('blocked'))
+    settings.states = 'done,waiting,working'
+    await emit(event('working'))
+    assert.deepEqual(reads, [])
+    assert.equal(stub.received.at(-1).body.state, 'working')
+    assert.equal(stub.received.at(-1).body.tail, null)
+    assert.deepEqual(logs.filter((line) => line.includes('s3cret')), [])
+  } finally {
+    stub.close()
+  }
+})
+
+test('issue #3: a terminal that cannot be read still gets its alert, once, without a tail', async () => {
+  const stub = await startStub([])
+  const { orca, settings, logs, emit } = mockOrca([], {})
+  settings.webhookUrl = stub.url
+  const done = { workspaceId: null, paneKey: 'p', terminalId: 'closed', title: 'x', state: 'done', receivedAt: 1 }
+  try {
+    await activate(orca)
+    await emit(done)
+    await emit(done)
+    assert.equal(stub.received.length, 1)
+    assert.deepEqual([stub.received[0].body.tail, stub.received[0].body.needsInput], [null, false])
+    assert.ok(logs.includes('could not read terminal output: not_found'))
+  } finally {
     stub.close()
   }
 })
