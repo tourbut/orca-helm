@@ -402,6 +402,9 @@ test('a FullOps alert carries the same report terminal alert: one POST, unless t
     await emit(done)
     await emit(done)
     assert.deepEqual(sent(), ['fullops.decision+agentStatus', 'fullops.decision+agentStatus', 'agent.status.changed', 'fullops.decision'])
+    // The terminal alert sent on its own is the same event as the one the failed POST carried: a receiver can drop either.
+    assert.equal(stub.received[2].body.eventId, stub.received[0].body.agentStatus.eventId)
+    assert.deepEqual(stub.received[2].body, stub.received[0].body.agentStatus)
 
     write({ version: 1, id: 'D002', status: 'open', question: '배포할까요?', origin: 'bot' })
     terminals.t1 = screen(['● D002 결정을 기다립니다. 배포할까요?'])
@@ -409,6 +412,11 @@ test('a FullOps alert carries the same report terminal alert: one POST, unless t
     assert.deepEqual(sent().slice(4), ['fullops.decision+agentStatus'])
     const { body } = stub.received[4]
     assert.deepEqual([body.decisionId, body.agentStatus.event, body.agentStatus.question], ['shop/D002', 'agent.status.changed', 'D002 결정을 기다립니다. 배포할까요?'])
+    // The outer FullOps fields stay its own; the terminal's live only inside agentStatus.
+    assert.equal(body.event, 'fullops.decision')
+    assert.match(body.text, /^shop\/D002: decision waiting - 배포할까요\?/)
+    assert.equal(body.eventId === body.agentStatus.eventId, false)
+    for (const field of ['tail', 'needsInput', 'question', 'state', 'terminalId']) assert.equal(field in body, false, field)
     assert.match(body.eventId, /^[0-9a-f]{16}$/)
 
     const day = Object.values(await handlers['alerts.counts']())[0]['풀로']
@@ -543,6 +551,42 @@ test('issue #2: judgments, holds, failures and escalations reach a person once, 
   second.settings.fullopsAuto = true
   await second.emit(settled)
   assert.deepEqual(sent().slice(count).sort(), ['fullops.hold:login', 'fullops.judgment:docs'])
+})
+
+test('a worker failure carries the done of the same report; both keep their own event and state', async (t) => {
+  const stub = await startStub([])
+  const git = gitFixture()
+  const fake = fs.mkdtempSync(path.join(os.tmpdir(), 'grokbot-notify-orca-'))
+  fs.writeFileSync(path.join(fake, 'package.json'), '{"type":"commonjs"}')
+  fs.writeFileSync(path.join(fake, 'orchestration'), FAKE_ORCA)
+  const at = new Date().toISOString()
+  const failed = { id: 'msg_1', type: 'worker_done', subject: 'login 실패', body: '테스트 3건 실패', created_at: at, payload: JSON.stringify({ dispatchId: 'ctx_shop', outcome: 'failed' }) }
+  fs.writeFileSync(path.join(fake, 'script.json'), JSON.stringify({ messages: [failed], workspaces: { ctx_shop: 'r1::C:/wt/shop' } }))
+  const cwd = process.cwd()
+  const bin = process.env.ORCA_HELM_BIN
+  process.chdir(fake)
+  process.env.ORCA_HELM_BIN = process.execPath
+  t.after(() => {
+    process.chdir(cwd)
+    if (bin === undefined) delete process.env.ORCA_HELM_BIN
+    else process.env.ORCA_HELM_BIN = bin
+    stub.close()
+    git.cleanup()
+    fs.rmSync(fake, { recursive: true, force: true })
+  })
+  fs.mkdirSync(path.join(git.worktree, '.fullops-squad'))
+  fs.writeFileSync(path.join(git.worktree, '.fullops-squad', 'fullops.json'), '{}')
+  const workspaceId = `r1::${git.worktree}`
+  const { orca, settings, emit } = mockOrca([{ id: workspaceId, kind: 'worktree', name: 'main', branch: 'main', path: git.worktree }], { t1: screen(['● coordinator: 작업을 마쳤습니다.']) })
+  settings.routes = `풀로 | shop | ${stub.url}`
+  await activate(orca)
+  const done = { workspaceId, paneKey: 'p', terminalId: 't1', title: 'x', state: 'done', receivedAt: 1 }
+  await emit(done)
+  await emit(done)
+  assert.equal(stub.received.length, 1)
+  const { body } = stub.received[0]
+  assert.deepEqual([body.event, body.subject, body.messageId], ['fullops.failed', 'login 실패', 'msg_1'])
+  assert.deepEqual([body.agentStatus.event, body.agentStatus.state, body.agentStatus.result], ['agent.status.changed', 'done', 'coordinator: 작업을 마쳤습니다.'])
 })
 
 test('a failed delivery logs no secret and is tried again on the next report of that state', async () => {
