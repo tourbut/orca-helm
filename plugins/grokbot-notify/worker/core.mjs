@@ -17,15 +17,25 @@ export function parseStates(str) {
 }
 
 const MAX_TERMINALS = 200
+/** A terminal record lasts this long after its last new state or alert; a terminal quiet that long is reported afresh. */
+export const RECORD_MS = 24 * 60 * 60_000
+// Claude Code reports `waiting` about a minute after `done`, on the same screen: that is one alert, not two.
+const groupOf = (state) => (state === 'waiting' ? 'done' : state)
 
 /**
- * Repeat check per terminal: a state goes out only when it or the terminal's tail differs from the last one. The same
- * state and tail again is held back (agents re-report `waiting` every minute or so), except once as a reminder when it
- * has lasted `remindMs`; 0 never reminds. Terminal ids are never reused, so a new terminal starts with no record.
+ * Repeat check per terminal, kept across worker restarts through `save()` and `saved`. A state goes out when its tail
+ * differs from the last one sent for it, so done -> working -> done on the same screen stays quiet; with no tail to
+ * compare (unreadable, `working`) another state in between counts as a new turn. The same state and tail reported on
+ * and on goes once more as a reminder after `remindMs` without another state; 0 never reminds. Terminal ids are never
+ * reused. Returns `{ send, why }`: new, changed, turn, retry or reminder when it goes, same or flap when held.
+ * @param {Record<string, unknown> | null} [saved] what `save()` returned
  */
-export function createDebouncer() {
-  /** @type {Map<string, { state: string, tailKey: string | null, at: number, reminded: boolean }>} */
+export function createDebouncer(saved = null, nowMs = Date.now()) {
+  /** @type {Map<string, { state: string | null, at: number, sent: Record<string, { tailKey: string | null, at: number, reminded: boolean, failed?: boolean }> }>} */
   const last = new Map()
+  for (const [key, entry] of Object.entries(saved ?? {})) {
+    if (entry?.sent && typeof entry.sent === 'object' && nowMs - entry.at < RECORD_MS) last.set(key, entry)
+  }
 
   /**
    * @param {string} key
@@ -35,22 +45,40 @@ export function createDebouncer() {
    * @param {string | null} [tailKey] null when the tail is unknown, which says nothing about whether it changed
    */
   function shouldSend(key, state, nowMs, remindMs, tailKey = null) {
-    const prev = last.get(key)
-    if (prev?.state === state && (tailKey === null || tailKey === prev.tailKey)) {
-      if (prev.reminded || !(remindMs > 0) || nowMs - prev.at < remindMs) return false
-      prev.reminded = true
-      return true
+    let entry = last.get(key)
+    if (!entry || nowMs - entry.at >= RECORD_MS) entry = { state: null, at: nowMs, sent: {} }
+    const moved = entry.state !== state
+    const prev = entry.sent[groupOf(state)]
+    const why = !prev
+      ? 'new'
+      : prev.failed
+        ? 'retry'
+        : tailKey !== null && tailKey !== prev.tailKey
+          ? 'changed'
+          : tailKey === null && moved
+            ? 'turn'
+            : !moved && !prev.reminded && remindMs > 0 && nowMs - prev.at >= remindMs
+              ? 'reminder'
+              : null
+    if (moved || why) {
+      // Map order is insertion order, so the first key is the terminal whose state changed longest ago.
+      last.delete(key)
+      if (last.size >= MAX_TERMINALS) last.delete(last.keys().next().value)
+      entry.state = state
+      entry.at = nowMs
+      if (why === 'reminder') prev.reminded = true
+      else if (why) entry.sent[groupOf(state)] = { tailKey: tailKey ?? prev?.tailKey ?? null, at: nowMs, reminded: false }
+      last.set(key, entry)
     }
-    // Map order is insertion order, so the first key is the terminal whose state changed longest ago.
-    last.delete(key)
-    if (last.size >= MAX_TERMINALS) last.delete(last.keys().next().value)
-    last.set(key, { state, tailKey, at: nowMs, reminded: false })
-    return true
+    return { send: Boolean(why), why: why ?? (moved ? 'flap' : 'same') }
   }
-  /** A delivery of `state` failed: forget it, so the next report tries again. A newer state is kept. */
+  /** A delivery of `state` failed: the next report of it tries again, counted as a retry. */
   shouldSend.forget = (key, state) => {
-    if (last.get(key)?.state === state) last.delete(key)
+    const prev = last.get(key)?.sent[groupOf(state)]
+    if (prev) prev.failed = true
   }
+  /** The records still within RECORD_MS, as JSON for the plugin store. */
+  shouldSend.save = (nowMs = Date.now()) => Object.fromEntries([...last].filter(([, entry]) => nowMs - entry.at < RECORD_MS))
   return shouldSend
 }
 
@@ -117,6 +145,7 @@ export function decisionPayload(record, where) {
   ].filter(Boolean)
   return {
     event: 'fullops.decision',
+    decisionId: `${label}/${item.id}`,
     text: `${label}/${item.id}: decision waiting - ${item.question ?? ''}${options}${facts.length ? ` (${facts.join('; ')})` : ''}`,
     decision: item,
     reply: `orca-helm decide ${label}/${item.id}${item.sha ? ` --sha ${item.sha}` : ''} --answer <answer> --by <who>`,
@@ -330,30 +359,95 @@ export function maskSecrets(str) {
 }
 
 /**
- * Terminal lines to the end of the conversation: no ANSI or TUI chrome (their counters would look like new output on
- * every report), secrets masked before cutting so the cut cannot hide a token's prefix, whole lines. Null when empty.
+ * Terminal lines as conversation text: no ANSI or TUI chrome (their counters would look like new output on every
+ * report), secrets masked before any cut so a cut cannot hide a token's prefix. Null when empty.
  */
+export function screenText(lines) {
+  return maskSecrets(plainLines(lines).join('\n')) || null
+}
+
+/** Where the tail starts: about the last TAIL_CHARS, from a line start. */
+function tailStart(text) {
+  if (text.length <= TAIL_CHARS) return 0
+  const newline = text.indexOf('\n', text.length - TAIL_CHARS)
+  return newline === -1 ? text.length - TAIL_CHARS : newline + 1
+}
+
+/** The end of screenText, whole lines. Null when empty. */
 export function tailText(lines) {
-  const masked = maskSecrets(plainLines(lines).join('\n'))
-  if (masked.length > TAIL_CHARS) return masked.slice(-TAIL_CHARS).replace(/^[^\n]*\n/, '')
-  return masked || null
+  const text = screenText(lines)
+  return text && text.slice(tailStart(text))
 }
 
 // `?` right after a word (not a ternary's ` ? `), a Korean question or request ending, or a y/n prompt.
 const ASKS = /[^\s?]\?(?:\s|$)|？|(?:까요|주세요)[.!]?(?:\s|$)|[([]y\/n[)\]]/i
+const YES_NO = /[([]y\/n[)\]]/i
 // Agents often add a closing note after the question, so the last line alone would miss it.
 const ASK_LINES = 8
+// An agent's reply starts with ● (⏺ in older Claude Code); tool output (⎿) is already gone.
+const REPLY_START = /^[ \t]*[●⏺][ \t]/gm
+const MARKER = /^\s*[●⏺❯›>]\s*/
+const OPTION = /^\s*(?:[❯›>]\s*)?\d{1,2}[.)]\s+(\S.*)$/
+const HEAD_CHARS = 2500
+
+const askLines = (tail) => String(tail ?? '').split('\n').filter((line) => line.trim()).slice(-ASK_LINES)
+const clip = (str, chars) => (str.length > chars ? `${str.slice(0, chars - 1)}…` : str)
 
 /** A hint only, by fixed rules: one of the tail's last lines asks something. False means no rule matched. */
 export function tailNeedsInput(tail) {
-  return String(tail ?? '').split('\n').filter((line) => line.trim()).slice(-ASK_LINES).some((line) => ASKS.test(line))
+  return askLines(tail).some((line) => ASKS.test(line))
+}
+
+/** The numbered choices right after the question line, else right before it. */
+function optionsAround(lines, at) {
+  const run = (from, step) => {
+    const found = []
+    for (let i = from; i >= 0 && i < lines.length && OPTION.test(lines[i]); i += step) found.push(clip(OPTION.exec(lines[i])[1].trim(), 120))
+    return step > 0 ? found : found.reverse()
+  }
+  const after = run(at + 1, 1)
+  return after.length ? after : run(at - 1, -1)
+}
+
+/**
+ * What a person needs from screenText, by fixed rules (no LLM): the tail; the question among its last lines with its
+ * numbered or y/n choices; the reply's first line as a short result; and the start of that reply when the tail cut it.
+ * @param {string | null} text
+ */
+export function screenFields(text) {
+  if (!text) return { tail: null, needsInput: false, question: null, options: [], result: null, replyHead: null }
+  const start = tailStart(text)
+  const tail = text.slice(start)
+  const lines = askLines(tail)
+  const at = lines.findLastIndex((line) => ASKS.test(line))
+  let reply = -1
+  for (const match of text.matchAll(REPLY_START)) reply = match.index
+  const replyLine = reply === -1 ? '' : text.slice(reply).split('\n', 1)[0]
+  let replyHead = reply !== -1 && reply < start ? text.slice(reply, start).trimEnd() : null
+  if (replyHead && replyHead.length > HEAD_CHARS) replyHead = replyHead.slice(0, replyHead.lastIndexOf('\n', HEAD_CHARS) + 1 || HEAD_CHARS).trimEnd()
+  return {
+    tail,
+    needsInput: at !== -1,
+    question: at === -1 ? null : clip(lines[at].replace(MARKER, '').trim(), 300),
+    options: at === -1 ? [] : YES_NO.test(lines[at]) ? ['y', 'n'] : optionsAround(lines, at),
+    result: replyLine ? clip(replyLine.replace(MARKER, '').trim(), 200) : null,
+    replyHead,
+  }
+}
+
+/**
+ * Claude Code's start screen and nothing else: its logo line with the version, no reply and no question. A `done` like
+ * that (a fresh agent, or a slash command with no reply) tells a person nothing.
+ */
+export function isStartScreen(text) {
+  return Boolean(text) && /Claude Code v\d/.test(text) && !new RegExp(REPLY_START.source, 'm').test(text) && !tailNeedsInput(text)
 }
 
 /**
  * @param {Record<string, unknown>} event
- * @param {{ worktree?: string | null, branch?: string | null, repo?: string | null, route?: string | null, host?: string | null, tail?: string | null }} extra
+ * @param {{ worktree?: string | null, branch?: string | null, repo?: string | null, route?: string | null, host?: string | null, screen?: string | null, eventId?: string | null, reminder?: boolean, read?: string | null }} extra
  */
-export function buildPayload(event, { worktree, branch, repo, route, host, tail }) {
+export function buildPayload(event, { worktree, branch, repo, route, host, screen, eventId, reminder, read }) {
   const mainAgent = event?.mainAgent && typeof event.mainAgent === 'object' ? event.mainAgent : null
   const state = event?.state ?? null
   const outcome = mainAgent?.outcome ?? null
@@ -373,7 +467,9 @@ export function buildPayload(event, { worktree, branch, repo, route, host, tail 
     route: route ?? null,
     receivedAt: typeof event?.receivedAt === 'number' ? new Date(event.receivedAt).toISOString() : null,
     host: host ?? null,
-    tail: tail ?? null,
-    needsInput: tailNeedsInput(tail),
+    ...screenFields(screen ?? null),
+    eventId: eventId ?? null,
+    reminder: Boolean(reminder),
+    read: read ?? null,
   }
 }

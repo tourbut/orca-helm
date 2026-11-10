@@ -12,6 +12,7 @@ import {
   gitCommonDir,
   holdPayload,
   isHttpUrl,
+  isStartScreen,
   judgmentPayload,
   matchesWorkspace,
   messagePayload,
@@ -21,8 +22,8 @@ import {
   repoNameFromGit,
   routeLine,
   routeProblem,
+  screenText,
   stripAuthPrefix,
-  tailText,
   text,
   upsertRouteLine,
   workspaceOptions,
@@ -35,6 +36,12 @@ const READ_LINES = 200
 // The single routine from before routes; its Authorization field and secret share this key.
 const SINGLE_AUTH_KEY = 'authValue'
 const SENT_KEY = 'fullopsSent'
+// Terminal repeat records per route; Orca stops a worker idle for 5 minutes, and the next one must remember them.
+const RECORDS_KEY = 'terminalSent'
+// Counts of what was sent, held and why, per day and route: no tail, URL or secret.
+const COUNTS_KEY = 'alertCounts'
+const COUNT_DAYS = 14
+const COUNTS_SAVE_MS = 60_000
 const ORCA_MS = 10_000
 // Older FullOps records are history, not news: they keep their files, and a new route or install must not replay them.
 const RECENT_MS = 24 * 60 * 60_000
@@ -298,12 +305,12 @@ async function workspaceInfo(orca, workspaceId) {
   return { name: ws?.name ?? null, branch: ws?.branch ?? null, path: worktreePath, repo: repoOf(worktreePath) }
 }
 
-/** The terminal's tail, or null when it cannot be read: the alert goes without it. Output is never logged. */
-async function readTail(orca, terminalId) {
+/** The terminal's masked text, or null when it cannot be read: the alert goes without it. Output is never logged. */
+async function readScreen(orca, terminalId) {
   if (!terminalId || !orca.host?.has?.('terminal.read')) return null
   try {
     const { lines } = await orca.host.call('terminal.read', { terminalId, maxLines: READ_LINES }, { signal: AbortSignal.timeout(READ_MS) })
-    return tailText(lines)
+    return screenText(lines)
   } catch (err) {
     orca.log(`could not read terminal output: ${err?.code ?? err?.name}`)
     return null
@@ -311,7 +318,9 @@ async function readTail(orca, terminalId) {
 }
 
 // Without whitespace, and only the end, so a resized terminal re-wrapping or scrolling the same text is not new output.
-const tailKeyOf = (tail) => createHash('sha256').update(tail.replace(/\s+/g, '').slice(-500)).digest('hex')
+const tailKeyOf = (screen) => createHash('sha256').update(screen.replace(/\s+/g, '').slice(-500)).digest('hex')
+const idOf = (value) => createHash('sha256').update(value).digest('hex').slice(0, 16)
+const ok = (status) => status >= 200 && status < 300
 
 async function post(url, body, auth) {
   const headers = { 'Content-Type': 'application/json' }
@@ -329,30 +338,99 @@ function shouldRetry(result) {
 // fetch's own messages can quote the URL's credentials or the Authorization header, so log only the kind.
 const failure = (err) => err.cause?.code ?? err.name
 
-/** POST once, and once more after RETRY_MS for a failed connection, 429 or 5xx. Logs name the bot, never its URL. */
-async function deliver(orca, route, payload, auth) {
+/**
+ * POST once, and once more after RETRY_MS for a failed connection, 429 or 5xx. Logs name the bot, never its URL.
+ * `note` counts the second POST and the outcome: a timeout apart, since Grok Bot may have got that one.
+ */
+async function deliver(orca, route, payload, auth, note = () => {}) {
   const who = `Grok Bot routine${route.name ? ` ${route.name}` : ''}`
   const body = JSON.stringify(payload)
   const attempt = () => post(route.url, body, auth).catch((err) => (err instanceof Error ? err : new Error(String(err))))
   let result = await attempt()
   if (shouldRetry(result)) {
     orca.log(`${who} ${result instanceof Error ? `failed: ${failure(result)}` : `responded ${result}`}; retrying once`)
+    note('post.retried')
     await delay(RETRY_MS)
     result = await attempt()
   }
   if (result instanceof Error) {
     orca.log(`${who} failed: ${failure(result)}`)
+    note(result.name === 'TimeoutError' ? 'post.timeout' : 'post.failed')
     return null
   }
-  if (result < 200 || result >= 300) orca.log(`${who} responded ${result}`)
+  if (!ok(result)) {
+    orca.log(`${who} responded ${result}`)
+    note('post.failed')
+  }
   return result
+}
+
+/** Today's counts per route, kept COUNT_DAYS; a new day logs the last day's totals, so `orca plugin logs` shows them. */
+function createCounts(orca, saved) {
+  const days = saved && typeof saved === 'object' ? saved : {}
+  let dirty = false
+  function count(route, name) {
+    const day = new Date().toLocaleDateString('sv')
+    if (!days[day]) {
+      const before = Object.keys(days).sort().at(-1)
+      if (before) {
+        const lines = Object.entries(days[before]).map(([who, names]) => `${who || '(webhookUrl)'} ${Object.entries(names).map(([n, v]) => `${n}=${v}`).join(' ')}`)
+        orca.log(`alert counts ${before}: ${lines.join('; ')}`)
+      }
+      days[day] = {}
+      for (const old of Object.keys(days).sort().slice(0, -COUNT_DAYS)) delete days[old]
+    }
+    const names = (days[day][route?.name ?? ''] ??= {})
+    names[name] = (names[name] ?? 0) + 1
+    dirty = true
+  }
+  count.days = days
+  count.take = () => {
+    const was = dirty
+    dirty = false
+    return was
+  }
+  return count
 }
 
 /** @param {import('orca/worker').OrcaWorkerApi} orca */
 export default async function activate(orca) {
+  const load = async (key, what) => {
+    try {
+      return await orca.storage.get(key)
+    } catch (err) {
+      orca.log(`could not read the ${what}: ${errText(err)}`)
+      return null
+    }
+  }
   /** One repeat check per route, so bots never hold each other back. */
   const debouncers = new Map()
+  for (const [key, saved] of Object.entries((await load(RECORDS_KEY, 'sent terminal alerts'))?.routes ?? {})) debouncers.set(key, createDebouncer(saved))
   const debouncerFor = (key) => debouncers.get(key) ?? debouncers.set(key, createDebouncer()).get(key)
+  const count = createCounts(orca, await load(COUNTS_KEY, 'alert counts'))
+  let savedRecords = null
+  let countsSavedAt = Date.now()
+  /** Records when they changed; counts with them, or once COUNTS_SAVE_MS passed. */
+  async function persist() {
+    const now = Date.now()
+    const routes = {}
+    for (const [key, debouncer] of debouncers) {
+      const kept = debouncer.save(now)
+      if (Object.keys(kept).length > 0) routes[key] = kept
+    }
+    const records = JSON.stringify(routes)
+    const recordsChanged = records !== savedRecords
+    try {
+      if (recordsChanged) await orca.storage.set(RECORDS_KEY, { routes })
+      savedRecords = records
+      if ((recordsChanged || now - countsSavedAt >= COUNTS_SAVE_MS) && count.take()) {
+        await orca.storage.set(COUNTS_KEY, count.days)
+        countsSavedAt = now
+      }
+    } catch (err) {
+      orca.log(`could not save the sent terminal alerts: ${errText(err)}`)
+    }
+  }
   const seen = { routes: null }
   let warnedNoUrl = false
 
@@ -363,8 +441,11 @@ export default async function activate(orca) {
     if (!change?.key || change.key === 'routes') orca.panels?.post?.('routes.changed', {})
   })
 
-  /** `test` (test.send) goes to every route and skips the workspace match and the repeat check. */
-  async function forward(event, { test = false } = {}) {
+  /**
+   * Which routes get this event's terminal alert, and its payload per route; sends nothing, so a FullOps alert of the
+   * same report can carry it. `test` (test.send) goes to every route and skips the workspace match and the repeat check.
+   */
+  async function terminalAlert(event, { test = false } = {}) {
     try {
       await migrateAuth(orca, seen)
       const settings = await readSettings(orca)
@@ -374,7 +455,7 @@ export default async function activate(orca) {
           orca.log('no Grok Bot routine is set (routes or webhookUrl); skipping')
           warnedNoUrl = true
         }
-        return { status: null, routes: [] }
+        return null
       }
       warnedNoUrl = false
 
@@ -382,40 +463,64 @@ export default async function activate(orca) {
       const needInfo = routes.some((route) => route.workspaces.length > 0)
       const info = needInfo ? await workspaceInfo(orca, event.workspaceId) : null
       const matched = test ? routes : routes.filter((route) => matchesWorkspace(route.workspaces, info ?? {}))
-      if (matched.length === 0) return { status: null, routes: [] }
+      if (matched.length === 0) return null
 
-      const minutes = Number(settings.remindMinutes ?? 30)
-      const remindMs = Math.max(0, Number.isFinite(minutes) ? minutes : 30) * 60_000
+      const minutes = Number(settings.remindMinutes ?? 0)
+      const remindMs = Math.max(0, Number.isFinite(minutes) ? minutes : 0) * 60_000
       const terminal = event.terminalId ?? event.paneKey
       const wanted = test || parseStates(settings.states).has(event.state)
       // `working` output changes all the time, so that state stays state-only even when `states` includes it.
-      const tail = wanted && !test && event.state !== 'working' ? await readTail(orca, event.terminalId) : null
-      const tailKey = tail && tailKeyOf(tail)
+      const screen = wanted && !test && event.state !== 'working' ? await readScreen(orca, event.terminalId) : null
+      if (!test && event.state === 'done' && isStartScreen(screen)) {
+        for (const route of matched) count(route, 'held.start-screen')
+        return null
+      }
+      const tailKey = screen && tailKeyOf(screen)
       const now = Date.now()
-      // Every state is remembered per route, so done -> working -> done sends the second done.
-      const fresh = matched.filter((route) => debouncerFor(route.key)(terminal, event.state, now, remindMs, tailKey))
-      if (!wanted) return { status: null, routes: [] }
-      const due = test ? matched : fresh
-      if (due.length === 0) return { status: null, routes: [] }
+      // Every state is remembered per route, so a state in between tells a new turn when there is no tail to compare.
+      const checks = matched.map((route) => ({ route, ...debouncerFor(route.key)(terminal, event.state, now, remindMs, tailKey) }))
+      if (!wanted) return null
+      if (!test) for (const { route, send, why } of checks) count(route, `${send ? 'sent' : 'held'}.${why}`)
+      const due = test ? checks.map(({ route }) => ({ route, why: 'test' })) : checks.filter(({ send }) => send)
+      if (due.length === 0) return null
 
       const where = info ?? (await workspaceInfo(orca, event.workspaceId))
-      const results = await Promise.all(
-        due.map(async (route) => {
-          const payload = buildPayload(event, {
-            worktree: where.name,
-            branch: where.branch,
-            repo: where.repo,
-            route: route.name,
-            host: os.hostname(),
-            tail,
-          })
-          const status = await deliver(orca, route, payload, await authFor(orca, route))
+      // The same terminal, state and output is the same event: a retry or reminder keeps the id.
+      const eventId = idOf(`${terminal}|${event.state}|${tailKey ?? event.mainAgent?.stateStartedAt ?? event.receivedAt ?? now}`)
+      const payload = (route, why) =>
+        buildPayload(event, {
+          worktree: where.name,
+          branch: where.branch,
+          repo: where.repo,
+          route: route.name,
+          host: os.hostname(),
+          screen,
+          eventId,
+          reminder: why === 'reminder',
+          read: !test && event.terminalId ? `orca-helm read t:${event.terminalId} --plain` : null,
+        })
+      return { test, terminal, state: event.state, due: due.map(({ route, why }) => ({ route, payload: () => payload(route, why) })) }
+    } catch (err) {
+      orca.log(`forward failed: ${errText(err)}`)
+      return null
+    }
+  }
+
+  /** POST the terminal alert to each due route but those whose FullOps alert already carried it. */
+  async function sendTerminal(alert, carried = new Set()) {
+    if (!alert) return { status: null, routes: [] }
+    try {
+      const sent = await Promise.all(
+        alert.due.map(async ({ route, payload }) => {
+          if (carried.has(route.key)) return count(route, 'merged')
+          const status = await deliver(orca, route, payload(), await authFor(orca, route), (name) => !alert.test && count(route, name))
           // An alert that did not get through was not sent: the next report of this state tries again.
-          if (!test && !(status >= 200 && status < 300)) debouncerFor(route.key).forget(terminal, event.state)
+          if (!alert.test && !ok(status)) debouncerFor(route.key).forget(alert.terminal, alert.state)
           return { route: route.name, status }
         })
       )
-      return { status: results[0].status, routes: results }
+      const results = sent.filter(Boolean)
+      return { status: results[0]?.status ?? null, routes: results }
     } catch (err) {
       orca.log(`forward failed: ${errText(err)}`)
       return { status: null, routes: [] }
@@ -444,17 +549,20 @@ export default async function activate(orca) {
    * Issue #2: each FullOps event for a person goes once to every route whose workspaces match. Everything is read when
    * Orca reports an agent of that repo, so nothing polls; a worker that escalates or fails then settles, so messages
    * are read only when an agent settles. A failed delivery is tried again at the next report.
+   * The terminal alert of the same report rides along (`agentStatus`) in a route's first FullOps alert, one POST instead
+   * of two; returns the route keys that got it that way.
    */
-  async function forwardFullOps(event) {
+  async function forwardFullOps(event, terminal) {
+    const carried = new Set()
     try {
       // A local worktree's id is `<repoId>::<path>`: skip the host call for repos without FullOps.
       const [repoId, idPath] = String(event.workspaceId ?? '').split('::')
-      if (idPath && !isFullOps(idPath)) return []
+      if (idPath && !isFullOps(idPath)) return carried
       const info = await workspaceInfo(orca, event.workspaceId)
-      if (!isFullOps(info.path)) return []
+      if (!isFullOps(info.path)) return carried
       const settings = await readSettings(orca)
       const routes = readRoutes(settings).filter((route) => matchesWorkspace(route.workspaces, info))
-      if (routes.length === 0) return []
+      if (routes.length === 0) return carried
       const common = gitCommonDir(info.path, gitFileOf(info.path))
       const alerts = recordAlerts(orca, common, settings, warned)
       let messagesRead = false
@@ -464,9 +572,9 @@ export default async function activate(orca) {
         messagesRead = read.complete
       }
       const live = new Set(alerts.map((alert) => `${common}#${alert.id}`))
-      const results = []
       let changed = false
       for (const route of routes) {
+        const riding = terminal?.due.find((due) => due.route.key === route.key)
         const sent = announced.get(route.key) ?? announced.set(route.key, new Set()).get(route.key)
         for (const key of sent) {
           // Closed or aged out since. Messages not read this time are not known to be gone.
@@ -479,24 +587,31 @@ export default async function activate(orca) {
           const key = `${common}#${alert.id}`
           if (sent.has(key)) continue
           sent.add(key)
-          const payload = alert.payload({ repo: info.repo, worktree: info.name, branch: info.branch, route: route.name, host: os.hostname() })
-          const status = await deliver(orca, route, payload, await authFor(orca, route))
-          if (status >= 200 && status < 300) changed = true
-          else sent.delete(key)
-          results.push({ route: route.name, alert: alert.id, status })
+          const payload = {
+            ...alert.payload({ repo: info.repo, worktree: info.name, branch: info.branch, route: route.name, host: os.hostname() }),
+            eventId: idOf(key),
+          }
+          const carry = riding && !carried.has(route.key)
+          if (carry) payload.agentStatus = riding.payload()
+          const status = await deliver(orca, route, payload, await authFor(orca, route), (name) => count(route, `fullops.${name}`))
+          if (ok(status)) {
+            changed = true
+            count(route, 'fullops.sent')
+            if (carry) carried.add(route.key)
+          } else sent.delete(key)
         }
       }
       if (changed) await saveAnnounced()
-      return results
     } catch (err) {
       orca.log(`FullOps alert forward failed: ${errText(err)}`)
-      return []
     }
+    return carried
   }
 
   orca.events.on('agent.status.changed', async (event) => {
-    const result = await forward(event)
-    await forwardFullOps(event)
+    const terminal = await terminalAlert(event)
+    const result = await sendTerminal(terminal, await forwardFullOps(event, terminal))
+    await persist()
     return result
   })
 
@@ -608,18 +723,19 @@ export default async function activate(orca) {
 
     orca.panels.handle('test.send', async () => {
       const now = Date.now()
-      return forward(
-        {
-          workspaceId: null,
-          paneKey: 'test.send',
-          terminalId: 'test.send',
-          title: 'test.send',
-          state: 'done',
-          receivedAt: now,
-          mainAgent: { state: 'done', outcome: 'success', stateStartedAt: now },
-        },
-        { test: true }
-      )
+      const event = {
+        workspaceId: null,
+        paneKey: 'test.send',
+        terminalId: 'test.send',
+        title: 'test.send',
+        state: 'done',
+        receivedAt: now,
+        mainAgent: { state: 'done', outcome: 'success', stateStartedAt: now },
+      }
+      return sendTerminal(await terminalAlert(event, { test: true }))
     })
+
+    // What was sent, held, merged or retried per day and route; counts only, never a tail or a URL.
+    orca.panels.handle('alerts.counts', () => count.days)
   }
 }

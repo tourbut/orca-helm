@@ -216,8 +216,23 @@ It receives Orca's plugin alert hook `agent.status.changed` and POSTs JSON to th
 - **Routing per bot:** an alert goes once to every `Routes` line whose workspaces match. An entry matches when it equals the repo name or the Orca workspace name (case-insensitive), or appears in the worktree path. A line with an empty workspaces field matches every workspace. When no line matches, nothing happens: no network call and no repeat bookkeeping.
 - With no valid `Routes` line, the single `webhookUrl` gets every workspace, as before.
 - By default it hands over `done`, `waiting` and `blocked` only, never `working` (change this with the `states` setting).
-- Per bot, a terminal's state is sent only when it or the terminal's tail (`tail`) changes. The same state with the same tail reported again (Claude Code re-reports `waiting` about every minute while it waits for input) is not sent; once that state has lasted `remindMinutes` (30 by default), the next report goes out once more as a reminder. If another state, such as `working`, came in between, it counts as a new turn and is sent. An alert that did not get through does not count as sent, so the next report of that state tries again. The record lives in the worker's memory: after Orca stops an idle worker (5 minutes with no events) or the plugin reloads, the next report goes out again.
-- Per bot, a failed connection, 429 or 5xx is retried once after 2 seconds. A 10-second timeout is not retried, because Grok Bot may already have the first one. Failures show with the bot's name in `orca plugin logs local.grokbot-notify`.
+- **Repeat check:** per bot, a terminal alert is sent only when the terminal's tail (`tail`) differs from the last one sent in that state.
+  - The same tail is not sent again. Claude Code re-reports `waiting` about every minute while it waits. `done → working → done` on an unchanged screen is not sent either.
+  - `done` and `waiting` count together: Claude Code reports `waiting` about a minute after `done`, on the same screen, and that is one alert. `blocked` is its own.
+  - A new turn, a new question or a failure puts new output on the screen, so it goes.
+  - When the tail cannot be read (terminal closed, plugin not approved, ...), it falls back to the state alone, as before: the same state again is not sent, and another state in between counts as a new turn.
+- **The record persists:** it is kept in the plugin's storage (`storage:own`), so after Orca stops an idle worker (5 minutes with no events) or the plugin reloads, the same alert is not sent again. A terminal's record is dropped after 24 hours without a new state or alert, and its next alert goes out afresh. Each bot remembers its latest 200 terminals.
+- **Reminders are off by default.** `remindMinutes` now defaults to `0`. To send the same state and tail once more after they last that many minutes, set the minutes (the old default was 30). Off means a missed question is not asked again: if a person misses the first alert, nothing more comes until the screen changes (or 24 hours pass). A value you set in Settings in an earlier version is kept.
+- **Noise:** a `done` whose screen shows only Claude Code's start screen (the logo with its version line), with no reply (`●`) and no question, is not sent.
+- **Merged with FullOps:** when the same report sends a FullOps event to that bot, the terminal alert rides in the first FullOps alert's `agentStatus` instead of its own POST. If that FullOps alert fails, the terminal alert is sent on its own.
+- An alert that did not get through does not count as sent, so the next report of that state tries again (counted as `sent.retry`).
+- Per bot, a failed connection, 429 or 5xx is retried once after 2 seconds. A 10-second timeout is not retried right away, because Grok Bot may already have the first one; the next report of the state still tries again, and the counts show it apart as `post.timeout`. Failures show with the bot's name in `orca plugin logs local.grokbot-notify`.
+- **Counts:** sent, held, merged and retried alerts are counted by reason, per day and bot, with no tail text, URL or secret. They stay in the plugin's storage for 14 days. The first alert of a new day logs the day before as one line, `alert counts <date>: <bot> sent.new=… held.same=…`, and the `alerts.counts` handler returns them.
+  - `sent.*`: why it went (`new`, `changed` new output, `turn` another state in between with no tail, `retry` after a failure, `reminder`).
+  - `held.*`: why it did not (`same` same state and tail, `flap` another state with the same tail, `start-screen`).
+  - `merged`: carried in a FullOps alert instead of its own POST.
+  - `fullops.sent`, `post.retried` (the retry after 2 seconds), `post.failed`, `post.timeout`; FullOps ones start with `fullops.`.
+  - Terminal alert POSTs are the sum of `sent.*` minus `merged`; retry POSTs are counted as `post.retried`.
 - The worktree name and branch come from `workspace.list`, and the repo name from the worktree's `.git` (the main worktree's folder name, or the main repo folder that a linked worktree's `gitdir:` points to). Each is `null` when not found.
 - **FullOps events:** when an agent of a FullOps repo reports, the events of that repo meant for a person go once to every bot whose workspaces match. Nothing polls. The plugin judges and verifies nothing; it relays what FullOps recorded.
   - Open decisions (`fullops-decisions/`) and `ask` or `blocked` judgments (`fullops-autonomy/`) of a task started through the bot (`origin: bot`) are sent. An expired decision cannot be answered, so it is not sent. An `ask` judgment on a commit that has a decision is covered by the decision alert. Tasks started in the Orca chat (`origin: user`) are asked in the coordinator chat first, so they are not sent.
@@ -248,7 +263,14 @@ It receives Orca's plugin alert hook `agent.status.changed` and POSTs JSON to th
   "host": "my-pc",
   "tail": "● Fixed the login redirect.
   Merge it?",
-  "needsInput": true
+  "needsInput": true,
+  "question": "Merge it?",
+  "options": [],
+  "result": "Fixed the login redirect.",
+  "replyHead": null,
+  "eventId": "3f9c2a17b0d4e861",
+  "reminder": false,
+  "read": "orca-helm read t:term_… --plain"
 }
 ```
 
@@ -262,6 +284,16 @@ It receives Orca's plugin alert hook `agent.status.changed` and POSTs JSON to th
 ` between lines): about the last 1500 characters without ANSI or TUI chrome, cut at a line start, with secrets masked. `null` when it could not be read, is empty, or the state is `working`.
 - `needsInput`: `true` when one of `tail`'s last 8 lines asks something (a boolean). It uses fixed rules only, no LLM: `?` right after a word or `？`, words ending in `까요` or `주세요`, and `(y/n)` or `[y/N]`. It is a hint: `false` does not promise that no person is needed.
 
+The fields below come from the screen by the same kind of fixed rules (no LLM). The worker reads the terminal's last 200 lines, but Orca can return fewer; anything outside what was read gives `null`.
+
+- `question`: the (last) line that made `needsInput` `true`, without a leading mark such as `●`. `null` when none.
+- `options`: the numbered list (`1.`, `2)`) right under that question, else right above it; `["y","n"]` for `(y/n)` or `[y/N]`. `[]` when none.
+- `result`: the first line of the last reply (the line starting with `●`), at most 200 characters. `null` when none.
+- `replyHead`: when `tail` cut off the start of the last reply, the reply from its start up to where `tail` begins (at most 2500 characters, whole lines). It does not overlap `tail`: `replyHead` followed by `tail` gives the reply's start and end. `null` when nothing was cut.
+- `eventId`: 16 hex characters, the same for the same terminal, state and output. A retry after a failure and a reminder keep it (`reminder: true` tells the latter); new output gets a new one. Without a tail it is made from when the state started. Whether a receiver stops a duplicate run by this id has not been checked; a routine that wants that has to do it itself.
+- `reminder`: `true` when this is the `remindMinutes` reminder.
+- `read`: the command that reads further back: `orca-helm read t:<terminalId> --plain` (add `--lines` for more).
+
 Tell terminal states and FullOps events apart by `event`. `agent.status.changed` (such as `done`) only says that terminal's agent stopped; it does not say a FullOps task finished. `fullops.*` events come from what FullOps recorded or from worker messages.
 
 | `event` | Meaning | What a person does |
@@ -272,7 +304,7 @@ Tell terminal states and FullOps events apart by `event`. `agent.status.changed`
 | `fullops.escalation` | A worker is stuck (`subject`, `body`, `messageId`, `sentAt`) | Instructs the coordinator |
 | `fullops.failed` | A worker reported failure (same fields as `fullops.escalation`) | Instructs the coordinator |
 
-Every `fullops.*` alert has a one-line `text` and `repo`, `worktree`, `branch`, `route`, `host`. `worktree` and `branch` are those of the agent whose report triggered the alert, which may not be the worker behind the event. A decision alert looks like this:
+Every `fullops.*` alert has a one-line `text` and `repo`, `worktree`, `branch`, `route`, `host`, and an `eventId` fixed per event. A decision alert also has `decisionId` (`<repo>/<decision id>`), the thing to answer. When it carries the same report's terminal alert, `agentStatus` holds that whole `agent.status.changed` alert (the format above). `worktree` and `branch` are those of the agent whose report triggered the alert, which may not be the worker behind the event. A decision alert looks like this:
 
 ```json
 {
@@ -301,7 +333,7 @@ They appear under the plugin in Orca **Settings**.
 | `webhookUrl` | Grok Bot routine URL | Only while `routes` has no valid line: one routine URL for every workspace. `auth.set`'s `url` also sets it |
 | `authValue` | Authorization value | Only while `routes` has no valid line: the Authorization value for that URL. Paste once; the worker moves it into secrets right away and clears the field (when it cannot, the value stays in the field and is sent from there) |
 | `states` | States | States to hand over, comma-separated. Default `done,waiting,blocked` |
-| `remindMinutes` | Reminder minutes | Minutes an unchanged state must last before it is sent once more as a reminder; `0` never reminds. Default `30` |
+| `remindMinutes` | Reminder minutes | Minutes an unchanged state and tail must last before they are sent once more as a reminder. Default `0` (never; a missed question is not asked again). A value you set is kept |
 | `fullopsAuto` | Send FullOps auto judgments | Also sends the `auto` judgment of a task started through the bot. Default `false` |
 
 ### Handlers
@@ -316,6 +348,7 @@ The Grok Bot panel calls `routes.*` through `plugin.request`. From the command l
 | `auth.set` | `{"route": "<one routes line>"}` or `{"url"?: string, "value"?: string}` | `{"ok":true}`. A `route` line is appended to `routes` and replaces an earlier line for the same name. A malformed line fails with the reason only |
 | `auth.status` | none | `{"hasAuth","hasUrl","protection","routes":[{"name","workspaces","hasAuth"}],"errors":[{"line","reason"}]}`. Never the values themselves |
 | `test.send` | none | One test `done` alert to every bot, skipping the workspace match and the repeat check. `{"status","routes":[{"route","status"}]}` |
+| `alerts.counts` | none | `{"<date>":{"<bot name, empty for webhookUrl>":{"sent.new":1,"held.same":4,...}}}` for the last 14 days |
 
 ### Secrets
 
@@ -332,7 +365,7 @@ The Grok Bot panel calls `routes.*` through `plugin.request`. From the command l
 | `terminal:read` | Reading that terminal's output to build an alert's `tail` (Orca 1.4.248+) |
 | `settings:own` | Reading its settings, saving `auth.set`, turning Authorization values into `(saved)` or clearing the field |
 | `secrets:own` | Storing and reading the Authorization value |
-| `storage:own` | Remembering which FullOps events were sent |
+| `storage:own` | Remembering which FullOps events and terminal alerts were sent, and the alert counts |
 
 `storage:own` is new, so after updating you need to approve the plugin again in Orca. It asks for no terminal input and no agent launch. The plugin only alerts Grok Bot; the CLI does everything that changes Orca. The Grok Bot panel (`plugins/grokbot-notify/panel/routes.tsx`, a components panel) uses no capability of its own: it only asks the worker.
 
