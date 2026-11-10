@@ -1,7 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import { parseStates, createDebouncer, buildPayload, repoNameFromGit, gitCommonDir, parseWorkspaces, matchesWorkspace, parseRoutes, routeLine, upsertRouteLine, removeRouteLines, routeProblem, workspaceOptions, maskSecrets, tailNeedsInput, tailText } from '../worker/core.mjs'
+import { parseStates, createDebouncer as createChecker, buildPayload, repoNameFromGit, gitCommonDir, parseWorkspaces, matchesWorkspace, parseRoutes, routeLine, upsertRouteLine, removeRouteLines, routeProblem, workspaceOptions, maskSecrets, tailNeedsInput, tailText, screenFields, isStartScreen, RECORD_MS } from '../worker/core.mjs'
+
+/** The repeat check as a yes/no, for the tests that only ask whether it goes. */
+const createDebouncer = (...args) => {
+  const check = createChecker(...args)
+  return Object.assign((...call) => check(...call).send, { check, save: check.save, forget: check.forget })
+}
 
 test('parseStates defaults when empty or invalid', () => {
   assert.deepEqual([...parseStates('')].sort(), ['blocked', 'done', 'waiting'])
@@ -49,6 +55,41 @@ test('debouncer sends the same state again only when the tail changed', () => {
   assert.equal(remind('t', 'waiting', 190, 100, 'b'), true)
 })
 
+test('debouncer: the same output in another state, or after a short working, is held; a failure or new output is not', () => {
+  const check = createChecker()
+  const why = (...call) => check(...call).why
+  assert.equal(why('t', 'done', 0, 0, 'a'), 'new')
+  // done -> working -> done with nothing new on screen, and Claude Code's waiting a minute after done.
+  assert.equal(why('t', 'working', 1, 0), 'new')
+  assert.equal(why('t', 'done', 2, 0, 'a'), 'flap')
+  assert.equal(why('t', 'waiting', 3, 0, 'a'), 'flap')
+  assert.equal(why('t', 'waiting', 4, 0, 'a'), 'same')
+  // A real new turn or question has new output; a failure is its own state.
+  assert.equal(why('t', 'waiting', 5, 0, 'b'), 'changed')
+  assert.equal(why('t', 'blocked', 6, 0, 'b'), 'new')
+  // A failed delivery is tried again, and counted apart from a duplicate.
+  check.forget('t', 'blocked')
+  assert.equal(why('t', 'blocked', 7, 0, 'b'), 'retry')
+  assert.equal(why('t', 'blocked', 8, 0, 'b'), 'same')
+  // Without a tail another state in between still tells a new turn.
+  assert.equal(why('u', 'done', 0, 0), 'new')
+  assert.equal(why('u', 'working', 1, 0), 'new')
+  assert.equal(why('u', 'done', 2, 0), 'turn')
+})
+
+test('debouncer records survive a worker restart and expire after RECORD_MS', () => {
+  const first = createChecker()
+  first('t', 'done', 0, 0, 'a')
+  const stored = JSON.stringify(first.save(10))
+  const saved = () => JSON.parse(stored)
+  const second = createChecker(saved(), 10)
+  assert.equal(second('t', 'done', 20, 0, 'a').why, 'same')
+  assert.equal(second('t', 'waiting', 30, 0, 'a').why, 'flap')
+  // A day without a new state or alert: reported afresh, and no longer saved.
+  assert.equal(createChecker(saved(), RECORD_MS)('t', 'done', RECORD_MS, 0, 'a').why, 'new')
+  assert.deepEqual(second.save(30 + RECORD_MS), {})
+})
+
 test('maskSecrets hides common tokens and leaves ordinary text', () => {
   const hex = 'ab12'.repeat(10)
   const b64 = 'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0fI+/x='
@@ -92,9 +133,43 @@ test('tailNeedsInput follows fixed rules over the last lines', () => {
 
 test('buildPayload adds tail and needsInput and leaves the other fields', () => {
   const plain = buildPayload({ state: 'done' }, {})
-  assert.deepEqual([plain.tail, plain.needsInput], [null, false])
-  const asked = buildPayload({ state: 'done' }, { tail: '릴리스할까요?' })
-  assert.deepEqual([asked.tail, asked.needsInput, asked.text], ['릴리스할까요?', true, 'Orca: done'])
+  assert.deepEqual([plain.tail, plain.needsInput, plain.question, plain.options, plain.result, plain.replyHead, plain.eventId, plain.reminder, plain.read], [null, false, null, [], null, null, null, false, null])
+  const asked = buildPayload({ state: 'done' }, { screen: '릴리스할까요?', eventId: 'e1', reminder: true, read: 'orca-helm read t:x --plain' })
+  assert.deepEqual([asked.tail, asked.needsInput, asked.text, asked.question, asked.eventId, asked.reminder], ['릴리스할까요?', true, 'Orca: done', '릴리스할까요?', 'e1', true])
+})
+
+test('screenFields: question with its choices, the reply as a result, and the reply start a long tail cut off', () => {
+  const choices = screenFields(['● 테스트 통과했습니다.', '', '어느 쪽으로 병합할까요?', '1. main에 바로', '2) PR로', '', '정해 주시면 진행합니다.'].join('\n'))
+  assert.deepEqual([choices.question, choices.options, choices.result, choices.replyHead], ['어느 쪽으로 병합할까요?', ['main에 바로', 'PR로'], '테스트 통과했습니다.', null])
+  // Choices listed before the question, and a y/n prompt.
+  assert.deepEqual(screenFields('1. 진행\n2. 보류\n● 어떻게 할까요?').options, ['진행', '보류'])
+  assert.deepEqual(screenFields('Overwrite? [y/N]').options, ['y', 'n'])
+  assert.deepEqual([screenFields('● 끝났습니다.').question, screenFields('● 끝났습니다.').options], [null, []])
+
+  const body = Array.from({ length: 200 }, (_, i) => `  변경 ${i}`)
+  const long = screenFields(['> 고쳐 주세요', '● 로그인 리다이렉트를 고쳤습니다.', ...body, '  병합할까요?'].join('\n'))
+  assert.ok(long.tail.length <= 1500 && !long.tail.includes('●'))
+  assert.equal(long.result, '로그인 리다이렉트를 고쳤습니다.')
+  assert.ok(long.replyHead.startsWith('● 로그인 리다이렉트를 고쳤습니다.\n  변경 0'))
+  assert.ok(long.replyHead.length <= 2500)
+  // replyHead ends where the tail starts: together they hold the reply's start and end, nothing twice.
+  assert.ok(!long.replyHead.includes(long.tail.split('\n')[0]))
+})
+
+test('isStartScreen: Claude Code started and nothing said yet', () => {
+  // `orca-helm read --plain` of a fresh Claude Code that reported done (2026-11-10).
+  const fresh = [
+    ' ▐▛███▛█   Claude Code v2.1.319',
+    '▝▜██████▀  Opus 5.5 with high effort · Claude Ultra',
+    ' ▝▝   ▝▝   D:\\workspace\\grokbot-worktool',
+    '  Updated to latest. Got 45 features, 302 bugfixes, and 129 other changes.',
+    '⚠ 7 MCP servers need authentication · run /mcp',
+  ].join('\n')
+  assert.equal(isStartScreen(fresh), true)
+  assert.equal(isStartScreen(`${fresh}\n> 안녕\n● 안녕하세요.`), false)
+  assert.equal(isStartScreen(`${fresh}\nDo you trust the files in this folder?`), false)
+  assert.equal(isStartScreen('● 끝났습니다.'), false)
+  assert.equal(isStartScreen(null), false)
 })
 
 test('buildPayload shape', () => {

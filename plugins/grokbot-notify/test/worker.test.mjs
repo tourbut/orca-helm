@@ -232,9 +232,9 @@ test('issue #3: an alert carries the masked tail, and the same state goes again 
     assert.equal(stub.received.length, 2)
     assert.equal(stub.received.at(-1).body.tail, '● 2.0.0도 릴리스할까요?')
 
-    // Issue #1 still holds: a waiting terminal whose output stands still gets one alert.
+    // Issue #1 still holds, and the waiting Claude Code reports after done on the same screen adds nothing.
     for (let i = 0; i < 3; i++) await emit(event('waiting'))
-    assert.equal(stub.received.length, 3)
+    assert.equal(stub.received.length, 2)
 
     // A state not handed over reads nothing, and neither does `working`, whose output never stands still.
     settings.states = 'waiting'
@@ -246,6 +246,76 @@ test('issue #3: an alert carries the masked tail, and the same state goes again 
     assert.equal(stub.received.at(-1).body.state, 'working')
     assert.equal(stub.received.at(-1).body.tail, null)
     assert.deepEqual(logs.filter((line) => line.includes('s3cret')), [])
+  } finally {
+    stub.close()
+  }
+})
+
+test('a worker restart remembers what was sent; new output, a failure and a new terminal still go', async () => {
+  const stub = await startStub([])
+  const terminals = { term1: screen(['> 고쳐 주세요', '● 고쳤습니다. 병합할까요?']), term2: screen(['● 다른 작업 끝']) }
+  const store = {}
+  const event = (state, terminalId = 'term1') => ({ workspaceId: null, paneKey: 'p', terminalId, title: 'x', state, receivedAt: 1 })
+  const start = async () => {
+    const mock = mockOrca([], terminals, store)
+    mock.settings.webhookUrl = stub.url
+    delete mock.settings.remindMinutes // unset: Orca gives the manifest default, 0
+    await activate(mock.orca)
+    return mock
+  }
+  const realNow = Date.now
+  let now = realNow()
+  Date.now = () => now
+  try {
+    const first = await start()
+    await first.emit(event('done'))
+    assert.equal(stub.received.length, 1)
+    const { eventId, read, question } = stub.received[0].body
+    assert.match(eventId, /^[0-9a-f]{16}$/)
+    assert.deepEqual([read, question], ['orca-helm read t:term1 --plain', '고쳤습니다. 병합할까요?'])
+
+    // Orca stopped the idle worker; the next one holds the same screen in any state, and never reminds by default.
+    const second = await start()
+    now += 6 * 60_000
+    await second.emit(event('waiting'))
+    await second.emit(event('working'))
+    await second.emit(event('done'))
+    now += 60 * 60_000
+    await second.emit(event('done'))
+    assert.equal(stub.received.length, 1)
+
+    await second.emit(event('done', 'term2'))
+    terminals.term1 = screen(['> 고쳐 주세요', '● 고쳤습니다. 병합할까요?', '> 네', '● 병합했습니다.'])
+    await second.emit(event('done'))
+    await second.emit(event('blocked'))
+    assert.deepEqual(stub.received.slice(1).map(({ body }) => `${body.terminalId}:${body.state}`), ['term2:done', 'term1:done', 'term1:blocked'])
+    assert.notEqual(stub.received[2].body.eventId, eventId) // another output, another event
+
+    // Counts carry over the restart too: first worker's done, then term2's done and the blocked.
+    const day = Object.values(await second.handlers['alerts.counts']())[0]['']
+    assert.deepEqual(day, { 'sent.new': 3, 'held.flap': 2, 'held.same': 1, 'sent.changed': 1 })
+  } finally {
+    Date.now = realNow
+    stub.close()
+  }
+})
+
+test('a done showing only Claude Code start screen is not sent', async () => {
+  const stub = await startStub([])
+  const fresh = [' ▐▛███▛█   Claude Code v2.1.319', '▝▜██████▀  Opus 5.5 · Claude Ultra', ' ▝▝   ▝▝   D:\\workspace\\x']
+  const terminals = { term1: screen(fresh) }
+  const { orca, settings, handlers, emit } = mockOrca([], terminals)
+  settings.webhookUrl = stub.url
+  const done = { workspaceId: null, paneKey: 'p', terminalId: 'term1', title: 'Claude Code', state: 'done', receivedAt: 1 }
+  try {
+    await activate(orca)
+    await emit(done)
+    assert.equal(stub.received.length, 0)
+    terminals.term1 = screen([...fresh, '> 상태 알려 줘', '● 테스트 3건 실패입니다.'])
+    await emit(done)
+    assert.equal(stub.received.length, 1)
+    assert.equal(stub.received[0].body.result, '테스트 3건 실패입니다.')
+    assert.equal(Object.values(await handlers['alerts.counts']())[0]['']['held.start-screen'], 1)
   } finally {
     stub.close()
   }
@@ -306,6 +376,43 @@ test('issue #2: an open FullOps decision of a bot task goes to its routes once, 
     await emit(working)
     assert.deepEqual(stub.received.slice(3).map((r) => r.body.decision.id), ['D004'])
     assert.deepEqual(logs.filter((line) => /Bearer|t0ken/.test(line)), [])
+  } finally {
+    stub.close()
+    git.cleanup()
+  }
+})
+
+test('a FullOps alert carries the same report terminal alert: one POST, unless the FullOps one fails', async () => {
+  const stub = await startStub([503, 503])
+  const git = gitFixture()
+  fs.mkdirSync(path.join(git.worktree, '.fullops-squad'))
+  fs.writeFileSync(path.join(git.worktree, '.fullops-squad', 'fullops.json'), '{}')
+  const records = path.join(git.root, 'shop', '.git', 'fullops-decisions')
+  fs.mkdirSync(records)
+  const write = (item) => fs.writeFileSync(path.join(records, `${item.id}.json`), JSON.stringify(item))
+  write({ version: 1, id: 'D001', status: 'open', question: '병합할까요?', options: ['진행', '보류'], origin: 'bot' })
+  const terminals = { t1: screen(['● D001 결정을 기다립니다. 병합할까요?']) }
+  const { orca, settings, handlers, emit } = mockOrca([{ id: 'wt1', kind: 'worktree', name: 'main', branch: 'main', path: git.worktree }], terminals)
+  settings.routes = `풀로 | shop | ${stub.url}`
+  const done = { workspaceId: 'wt1', paneKey: 'p', terminalId: 't1', title: 'x', state: 'done', receivedAt: 1 }
+  const sent = () => stub.received.map(({ body }) => `${body.event}${body.agentStatus ? '+agentStatus' : ''}`)
+  try {
+    await activate(orca)
+    // The FullOps POST carrying it fails (and its retry): the terminal alert goes on its own, the decision at the next report.
+    await emit(done)
+    await emit(done)
+    assert.deepEqual(sent(), ['fullops.decision+agentStatus', 'fullops.decision+agentStatus', 'agent.status.changed', 'fullops.decision'])
+
+    write({ version: 1, id: 'D002', status: 'open', question: '배포할까요?', origin: 'bot' })
+    terminals.t1 = screen(['● D002 결정을 기다립니다. 배포할까요?'])
+    await emit(done)
+    assert.deepEqual(sent().slice(4), ['fullops.decision+agentStatus'])
+    const { body } = stub.received[4]
+    assert.deepEqual([body.decisionId, body.agentStatus.event, body.agentStatus.question], ['shop/D002', 'agent.status.changed', 'D002 결정을 기다립니다. 배포할까요?'])
+    assert.match(body.eventId, /^[0-9a-f]{16}$/)
+
+    const day = Object.values(await handlers['alerts.counts']())[0]['풀로']
+    assert.deepEqual(day, { 'sent.new': 1, 'fullops.post.retried': 1, 'fullops.post.failed': 1, 'held.same': 1, 'fullops.sent': 2, 'sent.changed': 1, merged: 1 })
   } finally {
     stub.close()
     git.cleanup()
