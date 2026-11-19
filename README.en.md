@@ -188,6 +188,7 @@ In a [FullOps](https://github.com/tourbut/Fullops-Squad-plugin) repo (one with `
 | 2 | `wait` timed out |
 | 3 | Several targets (or several repos for `start`, or several repos for `decisions`/`decide`, or several repos holding the decision for `decide`). Candidates go to stdout |
 | 4 | FullOps's `decision.py` is missing or older than 1.16.0, a decision record has another format version, or Python cannot be run (`ORCA_HELM_PYTHON`) |
+| 5 | `send` refused: the agent shows a question card or permission prompt (Orca `agent_prompt_blocked`). A person answers it in Orca, then send again. The `--retry-request` hint in Orca's message is for a lost reply, not for this |
 
 ## Platform notes
 

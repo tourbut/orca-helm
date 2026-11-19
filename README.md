@@ -188,6 +188,7 @@ Grok Bot은 PC 셸에서 orca-helm을 호출합니다. Windows는 `C:\tools\orca
 | 2 | `wait` 시간 초과 |
 | 3 | 대상(또는 `start`·`decisions`·`decide` 의 repo, `decide` 의 결정)이 여러 개. 후보를 stdout에 출력 |
 | 4 | FullOps `decision.py` 가 없거나 1.16.0보다 오래됨, 결정 기록 형식 버전이 다름, 또는 Python을 실행할 수 없음(`ORCA_HELM_PYTHON`) |
+| 5 | `send` 거절: 에이전트가 질문 카드나 권한 확인 창을 띄움(Orca `agent_prompt_blocked`). 사람이 Orca에서 답한 뒤 다시 보냅니다. Orca 메시지의 `--retry-request` 안내는 응답을 잃은 전송용이라 이 경우에 쓰지 않습니다 |
 
 ## 플랫폼 메모
 
