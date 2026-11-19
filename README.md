@@ -138,6 +138,7 @@ Grok Bot은 PC 셸에서 orca-helm을 호출합니다. Windows는 `C:\tools\orca
 | `wait <target> [--timeout 600] [--interval 5] [--for agent\|tui-idle\|exit] [--fresh 60]` | 아래 [wait](#wait) 참고. 초 단위 |
 | `decisions [repo-query] [--all]` | FullOps 저장소마다 열린 결정을 한 줄씩(`--all` 은 닫힌 것까지): `<repo>/<결정 ID>  <상태>  <과제 키>  "<질문>"  [선택지]  sha:<SHA>  until:<만료>  risks:<사유>  blocks:<기다리는 작업>  origin:<진입점>`. `--json` 은 `{"decisions":[...]}` (FullOps 기록에 `repo`, `repoId` 추가). 아래 [FullOps](#fullops) 참고 |
 | `decide <[repo/]D###> --answer <답> --by <답한 사람> [--sha <SHA>]` | FullOps 결정을 닫습니다. 출력 `answered <repo>/<ID>: <답>`, 이미 닫혔으면 `already <상태> <repo>/<ID>: <기존 답>`. 결정 ID는 저장소마다 매기므로 여러 저장소에 같은 ID가 있으면 `<repo>/D003` 으로 씁니다. `--json` 은 FullOps 결과에 `repo` 추가 |
+| `answer <Q########> (--answer <label> | --answers <json>) --by <답한 사람>` | Claude Code 질문 카드(`claude.question` 알림)에 답합니다. 아래 [질문 카드](#질문-카드) 참고. 출력 `answered <ID>: <답> | <답>` |
 | `raw [--] <args>` | 같은 orca 바이너리에 그대로 전달하고 종료 코드도 그대로 돌려줍니다. `--` 는 없어도 됩니다 |
 | `help`, `--help`, `--version` | 도움말, 버전 |
 
@@ -178,6 +179,31 @@ Grok Bot은 PC 셸에서 orca-helm을 호출합니다. Windows는 `C:\tools\orca
 - `decide` 는 답을 봇 경로(`--via bot`)로 기록합니다. `--sha` 는 그 결정의 `sha`(`decisions` 의 `sha:` 칸, 알림의 `reply`)이고, SHA가 묶인 결정에는 꼭 넣어야 합니다. `--by` 는 실제로 답한 사람의 식별자입니다. `allow` 에서 골라 넣지 말고, coordinator의 `--allow` 도 같은 식별자를 쓰게 하세요. `--sha` 가 없거나 다르거나, 만료됐거나, `--by` 가 허용된 응답자가 아니면 FullOps가 거절하고 그 사유로 종료 코드 1입니다. Orca 대화에서 먼저 닫힌 결정에 늦게 답하면 `already` 로 알려 주고 종료 코드 0입니다.
 - FullOps는 결정 기록을 지켜보지 않습니다. 답한 뒤에는 그 결정을 기다리는 coordinator에 알려 주세요(예: `orca-helm send <coordinator> --text "orca-helm/D003 answered: 진행"`).
 - FullOps `decision.py` 를 못 찾거나, 1.16.0보다 오래됐거나, 결정 기록의 형식 버전(`version`)이 1이 아니면 종료 코드 4입니다.
+
+### 질문 카드
+
+Claude Code가 Orca 터미널에 질문 카드(AskUserQuestion)를 띄우면 Orca는 `send` 로 오는 답을 받지 않습니다(종료 코드 5). Claude Code 플러그인 `orca-helm-ask` 를 켜면 카드가 Grok Bot으로 가고, 사람이 고른 답을 `answer` 로 돌려줍니다. Claude Code 문서가 안내하는 PreToolUse hook 방식(`permissionDecision: "allow"` 와 `updatedInput.answers`)이라 Orca의 입력 안전장치를 건드리지 않습니다.
+
+Orca 터미널의 Claude Code에서 설치합니다. grokbot-notify 플러그인도 켜져 있어야 합니다.
+
+```text
+/plugin marketplace add <clone 폴더>
+/plugin install orca-helm-ask@orca-helm
+```
+
+1. Claude가 질문하면 hook(`bin/ask-hook.mjs`)이 카드를 띄우기 전에 질문을 `~/.orca-helm/ask/<ID>.json` 에 씁니다.
+2. grokbot-notify가 그 워크스페이스의 route마다 `claude.question` 알림을 한 번 보냅니다.
+3. 봇이 사람이 고른 답을 `orca-helm answer <ID> --answer <label> --by <답한 사람>` 으로 넘깁니다. 질문이 여럿이거나 multiSelect면 질문 순서대로 `--answers '["React",["lint","test"]]'` 입니다.
+4. hook이 그 답을 Claude Code에 넘기고, 카드 없이 이어집니다.
+
+hook이 기다리는 동안 터미널에는 카드가 보이지 않습니다. 다음 경우에는 hook이 물러나 평소처럼 카드가 뜹니다.
+
+- Orca 터미널이 아닐 때(`ORCA_WORKSPACE_ID` 없음)
+- 그 워크스페이스를 맡은 봇이 없거나, 모든 봇에 보내기가 실패했을 때
+- 30초 안에 grokbot-notify가 보냈다고 알리지 않을 때(플러그인이 꺼짐). `ORCA_HELM_ASK_SENT_WAIT` 초로 바꿉니다
+- 300초 안에 답이 없을 때. `ORCA_HELM_ASK_WAIT` 초로 바꾸되 `hooks/hooks.json` 의 `timeout`(330초)보다 작게 둡니다
+
+답은 카드에 있는 label만 받습니다(직접 입력하는 "Other"는 안 됩니다). 없는 label은 선택지 목록과 함께 종료 코드 1, 이미 끝난 질문에 늦게 답하면 `question <ID> is not open` 으로 종료 코드 1입니다. 권한 확인 창은 다루지 않습니다. 그 창은 터미널에서 답합니다.
 
 ## 종료 코드
 
@@ -299,6 +325,7 @@ Orca가 플러그인에 주는 알림 훅 `agent.status.changed` 를 받아 Grok
 
 | `event` | 뜻 | 사람이 할 일 |
 | --- | --- | --- |
+| `claude.question` | Claude Code 질문 카드 대기(`id`, `questions`, `terminal`, `until`). [질문 카드](#질문-카드) 참고 | `until` 전에 `reply` 명령으로 답합니다 |
 | `fullops.decision` | 결정 대기 | `reply` 명령으로 답합니다 |
 | `fullops.judgment` | 병합 판정(`grade`, `blocked`, `blockers`, `reasons`, `key`, `sha`). 지금은 섀도 모드라 병합 흐름을 바꾸지 않습니다 | 확인합니다. 답할 결정이 있으면 `fullops.decision` 이 따로 옵니다 |
 | `fullops.hold` | 병합 보류(`reason`, `owner`, `resume`, `key`, `sha`) | 재개 조건을 확인합니다 |

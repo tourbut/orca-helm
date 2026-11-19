@@ -133,6 +133,25 @@ const fullopsPlace = ({ repo, worktree, branch, route, host }) => ({
 })
 const shortSha = (sha) => (sha ? String(sha).slice(0, 12) : null)
 
+/** A Claude Code question card held by bin/ask-hook.mjs: the questions, one relayable line, and how to answer by `until`. */
+export function questionPayload(question, where) {
+  const questions = maskRecord(question.questions ?? [])
+  const labels = (item) => (item.options ?? []).map((option) => option.label).join(' / ')
+  const single = questions.length === 1 && !questions[0].multiSelect
+  return {
+    event: 'claude.question',
+    text: `${fullopsLabel(where)}: question waiting - ${questions.map((item) => `${item.question} [${labels(item)}]`).join('; ')}`,
+    id: question.id,
+    questions,
+    terminal: question.terminal ?? null,
+    until: question.until ?? null,
+    reply: single
+      ? `orca-helm answer ${question.id} --answer <label> --by <who>`
+      : `orca-helm answer ${question.id} --answers <JSON array: a label per question, an array of labels for multiSelect> --by <who>`,
+    ...fullopsPlace(where),
+  }
+}
+
 /** A FullOps decision waiting for a person: the record as FullOps wrote it, one relayable line, and how to answer. */
 export function decisionPayload(record, where) {
   const item = maskRecord(record)

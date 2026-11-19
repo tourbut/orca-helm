@@ -138,6 +138,7 @@ Output is short text by default; `--json` prints one line of JSON.
 | `wait <target> [--timeout 600] [--interval 5] [--for agent\|tui-idle\|exit] [--fresh 60]` | See [wait](#wait). Seconds |
 | `decisions [repo-query] [--all]` | One line per open decision of every FullOps repo (`--all` adds closed ones): `<repo>/<decision ID>  <status>  <task key>  "<question>"  [options]  sha:<SHA>  until:<expiry>  risks:<reasons>  blocks:<waiting work>  origin:<entry point>`. `--json` prints `{"decisions":[...]}` (FullOps records plus `repo` and `repoId`). See [FullOps](#fullops) |
 | `decide <[repo/]D###> --answer <answer> --by <who answered> [--sha <SHA>]` | Closes a FullOps decision. Prints `answered <repo>/<ID>: <answer>`, or `already <status> <repo>/<ID>: <earlier answer>` when it was closed already. Decision IDs are numbered per repo, so write `<repo>/D003` when several repos have that ID. `--json` prints FullOps's result plus `repo` |
+| `answer <Q########> (--answer <label> | --answers <json>) --by <who answered>` | Answers a Claude Code question card (the `claude.question` alert). See [Question cards](#question-cards). Prints `answered <ID>: <answer> | <answer>` |
 | `raw [--] <args>` | Passes the args to the same orca binary and returns its exit code. The `--` is optional |
 | `help`, `--help`, `--version` | Help and version |
 
@@ -178,6 +179,31 @@ In a [FullOps](https://github.com/tourbut/Fullops-Squad-plugin) repo (one with `
 - `decide` records the answer as coming through the bot (`--via bot`). `--sha` is the decision's own `sha` (the `sha:` column of `decisions`, and in the alert's `reply`); a SHA-bound decision needs it. `--by` is the identity of whoever actually answered; never pick it from `allow`, and have the coordinator's `--allow` use the same identities. When `--sha` is missing or different, the decision expired, or `--by` is not an allowed responder, FullOps refuses it and orca-helm exits 1 with that reason. A late answer to a decision already closed (for example from the Orca chat) reports `already` and exits 0.
 - FullOps does not watch decision records. After answering, tell the coordinator waiting on it (for example `orca-helm send <coordinator> --text "orca-helm/D003 answered: go"`).
 - When FullOps's `decision.py` is missing, older than 1.16.0, or a decision record has a format `version` other than 1, it exits 4.
+
+### Question cards
+
+When Claude Code shows a question card (AskUserQuestion) in an Orca terminal, Orca does not take an answer typed in by `send` (exit code 5). With the Claude Code plugin `orca-helm-ask` on, the card goes to Grok Bot, and the person's choice comes back through `answer`. It is the PreToolUse hook route Claude Code documents (`permissionDecision: "allow"` with `updatedInput.answers`), so Orca's input safeguard is left as it is.
+
+Install it from Claude Code in an Orca terminal. The grokbot-notify plugin must be on too.
+
+```text
+/plugin marketplace add <clone folder>
+/plugin install orca-helm-ask@orca-helm
+```
+
+1. When Claude asks, the hook (`bin/ask-hook.mjs`) writes the question to `~/.orca-helm/ask/<ID>.json` before the card shows.
+2. grokbot-notify sends one `claude.question` alert to each route of that workspace.
+3. The bot passes the person's choice on with `orca-helm answer <ID> --answer <label> --by <who answered>`. For several questions or a multiSelect one, use `--answers '["React",["lint","test"]]'` in question order.
+4. The hook hands the answer to Claude Code, which goes on without the card.
+
+While the hook waits, the terminal shows no card. The hook steps aside and the card shows as usual:
+
+- outside an Orca terminal (no `ORCA_WORKSPACE_ID`)
+- when no bot covers that workspace, or every delivery failed
+- when grokbot-notify does not report a delivery within 30 seconds (the plugin is off). Set `ORCA_HELM_ASK_SENT_WAIT` in seconds
+- when no answer comes within 300 seconds. Set `ORCA_HELM_ASK_WAIT` in seconds, below the `timeout` in `hooks/hooks.json` (330 seconds)
+
+Only labels on the card are taken (no typed "Other" answer). A label that is not there exits 1 with the options, and a late answer exits 1 with `question <ID> is not open`. Permission prompts are not covered: answer those in the terminal.
 
 ## Exit codes
 
@@ -299,6 +325,7 @@ Tell terminal states and FullOps events apart by `event`. `agent.status.changed`
 
 | `event` | Meaning | What a person does |
 | --- | --- | --- |
+| `claude.question` | A Claude Code question card is waiting (`id`, `questions`, `terminal`, `until`). See [Question cards](#question-cards) | Answer with the `reply` command before `until` |
 | `fullops.decision` | A decision is waiting | Answers with the `reply` command |
 | `fullops.judgment` | A merge judgment (`grade`, `blocked`, `blockers`, `reasons`, `key`, `sha`). In today's shadow mode it does not change the merge flow | Reads it. A decision to answer comes separately as `fullops.decision` |
 | `fullops.hold` | A merge is on hold (`reason`, `owner`, `resume`, `key`, `sha`) | Checks the resume condition |

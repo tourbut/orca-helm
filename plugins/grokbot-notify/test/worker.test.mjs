@@ -6,6 +6,9 @@ import os from 'node:os'
 import path from 'node:path'
 import activate from '../worker/main.mjs'
 
+// Question cards (lib/ask.mjs) are read from a temp folder, never from this PC's own.
+process.env.ORCA_HELM_ASK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'grokbot-ask-'))
+
 /** A main repo `shop` and a linked worktree `wt/main` whose .git file points back to it. */
 function gitFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'grokbot-notify-'))
@@ -634,5 +637,42 @@ test('an Authorization that secrets cannot store or read is kept and sent, never
     assert.equal(settings.routes, `A |  | ${stub.url} | (saved)`)
   } finally {
     stub.close()
+  }
+})
+
+test('a question card the ask hook holds goes once to the routes of its workspace, and the hook learns who got it', async () => {
+  // Its own folder: the workers of earlier tests still watch theirs.
+  const ASK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'grokbot-ask-'))
+  process.env.ORCA_HELM_ASK_DIR = ASK_DIR
+  const stub = await startStub([])
+  const git = gitFixture()
+  const { orca, settings, emit } = mockOrca([{ id: 'wt1', kind: 'worktree', name: 'main', branch: 'main', path: git.worktree }])
+  settings.routes = `풀로 | shop | ${stub.url} | Bearer a1
+노리 | other | ${stub.url} | Bearer b2`
+  settings.states = 'done'
+  const until = new Date(Date.now() + 60_000).toISOString()
+  const questions = [{ question: 'Which framework?', header: 'Framework', multiSelect: false, options: [{ label: 'React' }, { label: 'Vue' }] }]
+  const save = (name, value) => fs.writeFileSync(path.join(ASK_DIR, name), JSON.stringify(value))
+  save('Q0000000a.json', { version: 1, id: 'Q0000000a', workspaceId: 'wt1', terminal: 'term_1', questions, until })
+  save('Q0000000b.json', { version: 1, id: 'Q0000000b', workspaceId: 'wt1', questions, until: new Date(0).toISOString() })
+  save('Q0000000c.answer.json', { answers: {}, by: 'x' })
+  try {
+    await activate(orca)
+    const working = { workspaceId: 'wt1', paneKey: 'p', terminalId: 't1', title: 'x', state: 'working', receivedAt: 1 }
+    await emit(working)
+    await emit(working)
+    assert.equal(stub.received.length, 1)
+    const { body, auth } = stub.received[0]
+    assert.equal(auth, 'Bearer a1')
+    assert.equal(body.event, 'claude.question')
+    assert.equal(body.text, 'shop: question waiting - Which framework? [React / Vue]')
+    assert.equal(body.reply, 'orca-helm answer Q0000000a --answer <label> --by <who>')
+    assert.deepEqual([body.id, body.questions, body.terminal, body.until, body.repo, body.worktree, body.route], ['Q0000000a', questions, 'term_1', until, 'shop', 'main', '풀로'])
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(ASK_DIR, 'Q0000000a.sent.json'), 'utf8')).routes, ['풀로'])
+    assert.deepEqual(fs.readdirSync(ASK_DIR).sort(), ['Q0000000a.json', 'Q0000000a.sent.json'], 'a timed-out card and a stray answer are cleared')
+  } finally {
+    stub.close()
+    git.cleanup()
+    fs.rmSync(ASK_DIR, { recursive: true, force: true })
   }
 })

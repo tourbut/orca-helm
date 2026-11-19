@@ -1,0 +1,13 @@
+{
+  "name": "orca-helm",
+  "description": "orca-helm: hands Claude Code question cards in Orca terminals to Grok Bot.",
+  "owner": {
+    "name": "tourbut"
+  },
+  "plugins": [
+    {
+      "name": "orca-helm-ask",
+      "source": "./"
+    }
+  ]
+}
