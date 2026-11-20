@@ -242,12 +242,14 @@ export function messagePayload(message, where) {
  */
 export function botItemPayload(item, botName, where) {
   const { title, question } = maskRecord({ title: item.title ?? null, question: item.question ?? null })
+  // With choices, Orca's `text` already lists them under the question; `ask.context` is the words alone.
+  const words = question?.ask ? question.ask.context : question?.text
   const choices = (question?.ask?.questions ?? []).map(
     (ask) => `${ask.prompt}${ask.options?.length ? ` [${ask.options.map((option) => option.label).join(' / ')}]` : ''}`
   )
   return {
     event: 'bot.needs_you',
-    text: `${botName} #${item.number}: needs you - ${title ?? ''}${question?.text ? `: ${question.text}` : ''}${choices.length ? ` (${choices.join('; ')})` : ''}`,
+    text: `${botName} #${item.number}: needs you - ${title ?? ''}${words ? `: ${words}` : ''}${choices.length ? ` (${choices.join('; ')})` : ''}`,
     bot: botName,
     item: item.number ?? null,
     title,

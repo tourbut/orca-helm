@@ -702,7 +702,9 @@ test("an Orca bot's Needs you item goes once to the route that names the bot, an
   })
 
   const ask = { prompt: '어느 쪽으로 머지할까요?', options: [{ label: 'main' }, { label: 'dev', detail: 'Authorization: Bearer s3cret-token' }] }
-  const item = (eventId) => ({ uid: 'u1', number: 3, title: 'PR #9 머지', status: 'needs-you', chat: { id: 'c1' }, question: { eventId, text: '확인 부탁', ask: { questions: [ask] } } })
+  // Orca's `text` lists the choices under the question; `ask.context` is the words alone.
+  const question = (eventId) => ({ eventId, text: '확인 부탁\n\n어느 쪽으로 머지할까요?\n- main\n- dev', ask: { context: '확인 부탁', questions: [ask] } })
+  const item = (eventId) => ({ uid: 'u1', number: 3, title: 'PR #9 머지', status: 'needs_you', chat: { id: 'c1' }, question: question(eventId) })
   items([item('e5')])
   const workspaceId = 'folder:f1'
   const { orca, settings, emit } = mockOrca([{ id: workspaceId, kind: 'folder', name: '쿠어', branch: null, path: folder }])

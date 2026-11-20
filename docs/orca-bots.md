@@ -29,22 +29,23 @@ Orca 1.4.265의 Orca Bots를 orca-helm(Grok Bot 연동)에 붙일 수 있는지 
 
 ### 1.4 훅으로 들어오는가
 
-- **채팅 상태: 들어올 것으로 판단하지만 실측은 못 했습니다.** 근거는 앱 코드입니다. 플러그인에 `agent.status.changed` 를 내는 경로(`subscribeEnrichedStatus` → 매핑 함수)는 `restoredUnconfirmed` 만 거릅니다. 같은 상태 스트림을 쓰는 시스템 알림 등 다른 구독자는 `structuredHost`(채팅 세션)를 명시적으로 거릅니다. 즉 채팅 세션도 같은 스트림에 실리고, 플러그인 경로는 그것을 거르지 않습니다. 이때 이벤트의 `workspaceId` 는 `folder:<id>` 이고, `terminalId` 는 없습니다(터미널이 아님).
-- **봇 item: 들어오지 않습니다.** item 상태 변경은 플러그인 이벤트가 아닙니다. 다만 봇은 needs-you를 건 뒤 턴을 끝내므로, 그 채팅의 `agent.status.changed`(`done`)가 옵니다. 그때 `orca bot item list --bot <이름> --status needs-you --json` 으로 읽으면 됩니다. 봇 채팅 밖(일반 셸, 플러그인 워커)에서도 `--bot` 으로 읽히는 것을 확인했습니다. 결과에는 `number`, `title`, `status`, `chat.id`, `question`(`eventId`, `text`, `ask.questions[]`)이 있습니다.
-- **orca-helm-ask 질문 훅(`tourbut/prompt-blocked` 브랜치, 아직 main에 없음):** Claude 프로필 다섯 곳 모두에 `orca-helm-ask@orca-helm` 이 설치돼 있습니다. 봇 채팅도 Claude Code로 돌기 때문에, 봇의 `AskUserQuestion` 에 이 PreToolUse 훅이 걸릴 수 있습니다. 훅은 `ORCA_WORKSPACE_ID` 가 있을 때만 동작합니다. 채팅 세션 프로세스에 그 값이 남는지는 앱 코드만으로 확정하지 못했습니다. 걸린다면 그 봇 이름을 맡은 라우트가 있을 때만 카드가 Grok Bot으로 가고(최대 300초 대기), 없으면 플러그인이 바로 `sent: []` 를 써서 카드가 그대로 뜹니다.
+- **채팅 상태: 들어옵니다(3절 실측).** 앱 코드도 같은 결론입니다. 플러그인에 `agent.status.changed` 를 내는 경로(`subscribeEnrichedStatus` → 매핑 함수)는 `restoredUnconfirmed` 만 거릅니다. 같은 상태 스트림을 쓰는 시스템 알림 등 다른 구독자는 `structuredHost`(채팅 세션)를 명시적으로 거릅니다. 즉 채팅 세션도 같은 스트림에 실리고, 플러그인 경로는 그것을 거르지 않습니다. 이때 이벤트의 `workspaceId` 는 `folder:<id>` 이고, `terminalId` 는 없습니다(터미널이 아님).
+- **봇 item: 이벤트로는 들어오지 않습니다(읽어서 잡음, 3절 실측).** item 상태 변경은 플러그인 이벤트가 아닙니다. 다만 봇은 needs-you를 건 뒤 턴을 끝내므로, 그 채팅의 `agent.status.changed`(`done`)가 옵니다. 그때 `orca bot item list --bot <이름> --status needs-you --json` 으로 읽으면 됩니다. 봇 채팅 밖(일반 셸, 플러그인 워커)에서도 `--bot` 으로 읽히는 것을 확인했습니다. 결과에는 `number`, `title`, `status`, `chat.id`, `question`(`eventId`, `text`, `ask.questions[]`)이 있습니다.
+- **orca-helm-ask 질문 훅(`tourbut/prompt-blocked` 브랜치, 아직 main에 없음): 봇 채팅에서는 동작하지 않습니다(3절 실측).** Claude 프로필 다섯 곳 모두에 `orca-helm-ask@orca-helm` 이 설치돼 있지만, 봇이 `AskUserQuestion` 카드를 띄워도 훅이 쓰는 `~/.orca-helm/ask/` 파일이 생기지 않았습니다. 훅이 아예 돌지 않았는지, `ORCA_WORKSPACE_ID` 가 없어 바로 물러났는지는 구분하지 못했습니다. 어느 쪽이든 봇 채팅의 질문 카드는 이 경로로 넘어오지 않습니다.
+- 대기 중인 질문 카드의 글은 `orca agent read <채팅 세션 id> --limit 3 --json` 에서 `{"kind":"question","text":"…","pending":true}` 로 읽힙니다. 선택지는 나오지 않습니다. 채팅 세션 id는 이벤트 `paneKey` 의 `structured-agent-session-<id>:` 부분입니다.
 
 ### 1.5 나가는 쪽: orca-helm에서 봇에게 일 넣기
 
 | 방법 | 로그인 | 비고 |
 | --- | --- | --- |
-| `orca orchestration send --to bot:<이름> --type handoff\|question\|status [--chat <id>\|new] [--item <n>]` | 필요 없음(로컬) | `handoff` 는 일을 맡김, `question` 은 메일로 답함, `status` 는 정보만. `--item <n>` 은 그 item을 가진 채팅으로 갑니다. 일반 셸에서도 봇 이름 해석까지 진행되는 것을 확인했습니다(없는 봇 이름으로만 시험, 실제 봇에는 보내지 않음). |
+| `orca orchestration send --to bot:<이름> --type handoff\|question\|status [--chat <id>\|new] [--item <n>]` | 필요 없음(로컬) | `handoff` 는 일을 맡김, `question` 은 메일로 답함, `status` 는 정보만. `--item <n>` 은 그 item을 가진 채팅으로 갑니다. helm-probe로 실측했습니다(3절). 봇의 답은 보낸 쪽 메일함으로 옵니다(Orca 터미널에서 보내면 그 터미널의 `orca orchestration check`). |
 | 봇 채팅(Orca UI, `@봇`) | 필요 없음 | 사람용 |
 | 스케줄 automation | 필요 없음 | 봇에게 채팅으로 설정 |
 | 봇 웹훅 | **Orca 클라우드 로그인 필요** | 채팅에서 봇에게 만들게 하고 카드의 Copy URL로 복사. URL 자체가 비밀번호이며 서명 비밀값을 더할 수 있음. 로그아웃하면 이벤트가 멈춤. |
 | Slack, GitHub, Linear | **로그인 필요** | Orca Cloud 경유 |
 
-- owner의 "기록된 답"을 남기는 CLI는 없습니다. CLI 메일은 봇에게 전달되지만 Orca 카드에는 답으로 기록되지 않습니다(item 도움말: owner의 일반 코멘트도 기록된 답이 아님).
-- 채팅 승인(permission)을 CLI로 허가하는 경로도 찾지 못했습니다. 승인은 Orca 화면(또는 모바일)에서 해야 합니다.
+- owner의 "기록된 답"을 남기는 CLI는 없습니다. CLI 메일은 봇에게 전달되지만 Orca 카드에는 owner의 답으로 기록되지 않습니다(item 도움말: owner의 일반 코멘트도 기록된 답이 아님). 실측에서는 봇이 메일을 읽고 답을 적은 뒤 item을 Done으로 옮겼습니다.
+- 채팅 승인(permission)이나 채팅 안의 `AskUserQuestion` 카드를 CLI로 답하는 경로는 찾지 못했습니다. 카드가 떠 있는 동안 턴이 멈춰 있으므로 메일도 그 뒤에야 읽힙니다. 이것들은 Orca 화면(또는 모바일)에서 답해야 합니다.
 
 ## 2. 설계
 
@@ -69,25 +70,32 @@ Orca 1.4.265의 Orca Bots를 orca-helm(Grok Bot 연동)에 붙일 수 있는지 
 
 ### 2.2 들어오는 쪽
 
-- **A. 채팅 상태(코드 변경 없음):** 기존 `agent.status.changed` 전달이 그대로 처리합니다. `worktree` 는 봇 이름, `repo`·`branch`·`tail` 은 `null` 입니다(채팅은 터미널이 아님). Grok Bot은 사람에게 "Orca에서 승인/답 필요"라고 전하기만 합니다.
+- **A. 채팅 상태(코드 변경 없음):** 기존 `agent.status.changed` 전달이 그대로 처리합니다. `worktree` 는 봇 이름, `repo`·`branch`·`tail`·`terminalId` 는 `null` 입니다(채팅은 터미널이 아님). 봇이 카드를 띄우면 `blocked`, 턴이 끝나면 `done (success)` 입니다. Grok Bot은 사람에게 "Orca에서 승인/답 필요"라고 전하기만 합니다.
 - **B. 봇 item Needs you(구현함):** 봇 채팅이 `working` 이 아닌 상태로 알려지면, 워커가 `bot.json` 으로 봇을 알아보고 `orca bot item list --bot <이름> --status needs-you` 를 읽습니다. 라우트마다 item 하나를 질문(`question.eventId`) 하나에 한 번씩 `bot.needs_you` 로 보냅니다. 같은 item에 새로 물으면 다시 보내고, 닫힌 item은 잊습니다. 보낸 기록은 FullOps 사건과 같은 저장소 키에 남아 워커가 다시 떠도 유지됩니다. 자유 텍스트의 비밀값은 다른 알림과 같은 규칙으로 가립니다.
-- **C. orca-helm-ask(보류):** 봇 채팅에 걸리는지 실측한 뒤 정합니다(3절).
+- **C. orca-helm-ask:** 봇 채팅에는 걸리지 않습니다(3절). 봇 채팅의 질문 카드는 A의 `blocked` 알림으로만 알 수 있습니다.
 
-`bot.needs_you` 예:
+`bot.needs_you` 예(실측에서 받은 모양, `text` 는 고친 뒤 형식):
 
 ```json
 {
   "event": "bot.needs_you",
-  "text": "쿠어 #3: needs you - PR #9 머지: 확인 부탁 (어느 쪽으로 머지할까요? [main / dev])",
-  "bot": "쿠어",
-  "item": 3,
-  "title": "PR #9 머지",
-  "question": { "eventId": "e5", "text": "확인 부탁", "ask": { "questions": [{ "prompt": "어느 쪽으로 머지할까요?", "options": [{ "label": "main" }, { "label": "dev" }] }] } },
+  "text": "helm-probe #2: needs you - 실측 B: 머지 대상 고르기: 연동 시험용 질문입니다 (어느 브랜치로 머지할까요? [main / dev])",
+  "bot": "helm-probe",
+  "item": 2,
+  "title": "실측 B: 머지 대상 고르기",
+  "question": {
+    "eventId": "e15",
+    "text": "연동 시험용 질문입니다\n\n어느 브랜치로 머지할까요?\n   - main (recommended)\n   - dev: 개발 브랜치",
+    "ask": { "context": "연동 시험용 질문입니다", "questions": [{ "prompt": "어느 브랜치로 머지할까요?", "options": [{ "label": "main" }, { "label": "dev", "detail": "개발 브랜치" }], "recommended": 0 }] },
+    "answerable": true
+  },
   "chat": "<chat id>",
-  "reply": "orca-helm bot \"쿠어\" --item 3 --text <answer>",
-  "repo": null, "worktree": "쿠어", "branch": null, "route": "풀로", "host": "<PC 이름>"
+  "reply": "orca-helm bot \"helm-probe\" --item 2 --text <answer>",
+  "repo": null, "worktree": "helm-probe", "branch": null, "route": "probe", "host": "<PC 이름>"
 }
 ```
+
+`question.text` 는 Orca가 선택지까지 풀어 쓴 글이라, 한 줄 `text` 에는 `ask.context` 를 씁니다. `recommended` 는 0부터 세는 번호입니다(봇이 쓰는 CLI `--recommended` 는 1부터).
 
 ### 2.3 질문 카드 흐름 재사용
 
@@ -108,22 +116,33 @@ Grok Bot 루틴은 `fullops.decision`, `claude.question` 과 같은 방식으로
 - 결과는 봇 채팅에 남습니다. `orca bot chats --bot <이름> --json` 의 `lastSaid`, `orca bot item list --bot <이름>` 으로 읽습니다.
 - 로컬 메일이라 Orca 클라우드 로그인이 필요 없습니다. 웹훅은 Grok Bot이 PC 셸 없이 직접 부를 수 있다는 장점이 있지만, 로그인과 URL 비밀 관리가 필요해 이번에는 쓰지 않았습니다.
 
-## 3. 실측 절차(남은 일)
+## 3. 실측 결과
 
-테스트 봇은 만들지 못했습니다. `orca bot create --offer` 는 봇 채팅 안에서만 돌고, owner가 카드의 Create bot을 눌러야 생깁니다. 기존 봇 `쿠어` 로 시험하면 설치된 grokbot-notify가 Grok Bot에 실제 알림을 보낼 수 있어(외부 발신) 하지 않았습니다.
+2026-11-20 테스트 봇 `helm-probe`(owner가 만듦)로 시험했습니다. Grok Bot에 실제로 보내지 않도록 이 브랜치를 개발 플러그인(`local.grokbot-notify`)으로 불러오고, 라우트는 `probe | helm-probe | http://127.0.0.1:47811/probe | …` 하나만 두었습니다(로컬 수신기). 일은 모두 `orca-helm bot helm-probe …` 로 넣었습니다.
 
-1. Orca에서 `쿠어` 채팅에 "테스트 봇 helm-probe를 만들어 줘"라고 하고 카드에서 Create bot을 누릅니다.
-2. 이 브랜치 폴더를 개발 폴더로 다시 불러오고, 시험용 루틴(예: 로컬 HTTP 수신기) 줄을 `helm-probe` 워크스페이스로 하나 둡니다.
-3. helm-probe 채팅에서 "`orca bot item add` 로 항목을 만들고 `--status needs-you --ask` 로 선택지 두 개를 물어 봐"라고 합니다. → `bot.needs_you` 수신 확인(B).
-4. helm-probe의 권한 모드를 "Ask for approval"로 두고 파일 쓰기를 시킵니다. → `waiting`/`blocked` 알림 수신 확인(A).
-5. "AskUserQuestion으로 물어 봐"라고 시킵니다. → `claude.question` 수신 여부 확인(C, prompt-blocked 브랜치 필요).
-6. `orca-helm bot helm-probe --item <n> --text <답>` 으로 답이 채팅에 도착하는지 봅니다.
+| 시험 | 결과 |
+| --- | --- |
+| 나가는 쪽: `orca-helm bot helm-probe --file …` (handoff) | 됨. 봇이 일을 하고 답을 보낸 터미널 메일함으로 보냄 |
+| A: 봇 턴 종료 | 됨. `agent.status.changed` `done (success)`, `workspaceId: folder:…`, `paneKey: structured-agent-session-…`, `terminalId: null` |
+| B: 봇이 item #2를 needs-you로 둠 | 처음엔 실패: 워커에서 `orca` 가 `APPDATA is not set …` 로 실패. `runOrca` 를 고친 뒤 다음 턴 종료 때 `bot.needs_you` 1건 도착 |
+| B 답: `orca-helm bot helm-probe --item 2 --text …` | 됨. 메일이 item #2의 채팅으로 가고, 봇이 답을 적고 item을 Done으로 옮김 |
+| A: 봇이 `AskUserQuestion` 카드를 띄움 | 됨. `agent.status.changed` `blocked` |
+| C: 같은 카드에 orca-helm-ask 훅 | 안 됨. 90초 동안 `~/.orca-helm/ask/` 파일이 생기지 않음 |
+| A: 권한 모드 "Ask for approval"의 승인 요청 | 시험 안 함. 권한 모드를 CLI로 바꿀 수 없어서. 앱 코드상 같은 `blocked`/`waiting` 경로 |
+
+실측에서 고친 것:
+
+- **`runOrca` 의 APPDATA:** Orca 플러그인 워커는 APPDATA 없이 돌고, Windows의 `orca` 는 그것이 없으면 런타임을 못 찾습니다. 없으면 `<홈>\AppData\Roaming` 을 넣어 부릅니다. FullOps의 `orca orchestration inbox`(escalation·실패 알림)도 같은 함수를 쓰므로, 릴리스된 0.6.0에서도 Windows에서는 이 읽기가 실패했을 가능성이 큽니다(설치본 로그는 남아 있지 않아 확인 못 함).
+- **`bot.needs_you` 의 `text`:** `question.text` 에 선택지가 이미 풀려 있어 두 번 나왔습니다. `ask.context` 를 씁니다.
+
+시험 뒤 정리: 개발 플러그인 `local.grokbot-notify` 는 지우지 않고 비활성화만 했습니다(설정에 로컬 시험 라우트가 남아 있음). helm-probe 채팅에는 `실측 C: 어느 쪽?` 카드가 답을 기다리고 있습니다.
 
 ## 4. 남은 결정
 
-- 답 메일의 `--type`: 지금은 `handoff`(봇이 이어서 일함). `status`(정보만)가 나은지 실측 후 정합니다.
+- 답 메일의 `--type`: `handoff` 로 실측에서 봇이 답을 반영하고 item을 닫았습니다. 그대로 둘지 정합니다.
 - 봇 채팅의 `done` 알림: 라우트에 봇 이름을 넣으면 봇 턴이 끝날 때마다 `done` 도 갑니다. 봇 채팅만 `states` 를 다르게 둘지 정해야 합니다.
-- orca-helm-ask를 봇 채팅에도 걸지, 봇 채팅에서는 물러나게 할지 정해야 합니다(`ORCA_STRUCTURED_SESSION` 같은 신호로 구분 가능한지 확인 필요).
+- 봇 채팅의 `blocked` 알림에 대기 중인 질문 글을 실을지 정해야 합니다(`orca agent read` 로 읽힘, 선택지는 없음). 답은 어차피 Orca 화면에서 해야 합니다.
+- 테스트 봇 helm-probe와 비활성화한 개발 플러그인을 남길지 정해야 합니다.
 - 웹훅 진입점(클라우드 로그인)을 쓸지 정해야 합니다.
 - Grok Bot 루틴이 `bot.needs_you` 를 카드로 보여 주도록 고쳐야 합니다(루틴은 이 저장소 밖).
 - `bot item` 은 숨은 명령이라 Orca 업데이트로 바뀔 수 있습니다.
