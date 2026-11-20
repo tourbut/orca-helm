@@ -235,6 +235,29 @@ export function messagePayload(message, where) {
   }
 }
 
+/**
+ * An Orca bot item under Needs you (`orca bot item list --status needs-you`): its question as Orca shows it (`text`,
+ * and `ask.questions[]` of { prompt, options[{ label, detail }], recommended, multi } when it has choices), and how
+ * to answer by mail to the item's chat. The mail reaches the bot; Orca's card records only an answer given in Orca.
+ */
+export function botItemPayload(item, botName, where) {
+  const { title, question } = maskRecord({ title: item.title ?? null, question: item.question ?? null })
+  const choices = (question?.ask?.questions ?? []).map(
+    (ask) => `${ask.prompt}${ask.options?.length ? ` [${ask.options.map((option) => option.label).join(' / ')}]` : ''}`
+  )
+  return {
+    event: 'bot.needs_you',
+    text: `${botName} #${item.number}: needs you - ${title ?? ''}${question?.text ? `: ${question.text}` : ''}${choices.length ? ` (${choices.join('; ')})` : ''}`,
+    bot: botName,
+    item: item.number ?? null,
+    title,
+    question,
+    chat: item.chat?.id ?? null,
+    reply: `orca-helm bot "${botName}" --item ${item.number} --text <answer>`,
+    ...fullopsPlace(where),
+  }
+}
+
 const folded = (value) => String(value ?? '').toLowerCase().replaceAll('\\', '/')
 
 /** A route's workspaces field: lowercased entries. Empty means every workspace. */
