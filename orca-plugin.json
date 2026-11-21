@@ -65,9 +65,9 @@
       {
         "key": "remindMinutes",
         "title": "Reminder minutes",
-        "description": "A terminal's state is sent only when it or the terminal's last output changes. When the same state and output are reported again after lasting this many minutes, they are sent once more as a reminder. 0 never reminds.",
+        "description": "A terminal's alert is sent only when its last output changes (or, when the output cannot be read, its state). Set minutes to send the same state and output once more as a reminder after they last that long; 0 (the default) never reminds, so a missed question is not asked again.",
         "type": "integer",
-        "default": 30,
+        "default": 0,
         "minimum": 0
       },
       {
