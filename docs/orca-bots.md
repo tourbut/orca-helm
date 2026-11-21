@@ -31,7 +31,7 @@ Orca 1.4.265의 Orca Bots를 orca-helm(Grok Bot 연동)에 붙일 수 있는지 
 
 - **채팅 상태: 들어옵니다(3절 실측).** 앱 코드도 같은 결론입니다. 플러그인에 `agent.status.changed` 를 내는 경로(`subscribeEnrichedStatus` → 매핑 함수)는 `restoredUnconfirmed` 만 거릅니다. 같은 상태 스트림을 쓰는 시스템 알림 등 다른 구독자는 `structuredHost`(채팅 세션)를 명시적으로 거릅니다. 즉 채팅 세션도 같은 스트림에 실리고, 플러그인 경로는 그것을 거르지 않습니다. 이때 이벤트의 `workspaceId` 는 `folder:<id>` 이고, `terminalId` 는 없습니다(터미널이 아님).
 - **봇 item: 이벤트로는 들어오지 않습니다(읽어서 잡음, 3절 실측).** item 상태 변경은 플러그인 이벤트가 아닙니다. 다만 봇은 needs-you를 건 뒤 턴을 끝내므로, 그 채팅의 `agent.status.changed`(`done`)가 옵니다. 그때 `orca bot item list --bot <이름> --status needs-you --json` 으로 읽으면 됩니다. 봇 채팅 밖(일반 셸, 플러그인 워커)에서도 `--bot` 으로 읽히는 것을 확인했습니다. 결과에는 `number`, `title`, `status`, `chat.id`, `question`(`eventId`, `text`, `ask.questions[]`)이 있습니다.
-- **orca-helm-ask 질문 훅(`tourbut/prompt-blocked` 브랜치, 아직 main에 없음): 봇 채팅에서는 동작하지 않습니다(3절 실측).** Claude 프로필 다섯 곳 모두에 `orca-helm-ask@orca-helm` 이 설치돼 있지만, 봇이 `AskUserQuestion` 카드를 띄워도 훅이 쓰는 `~/.orca-helm/ask/` 파일이 생기지 않았습니다. 훅이 아예 돌지 않았는지, `ORCA_WORKSPACE_ID` 가 없어 바로 물러났는지는 구분하지 못했습니다. 어느 쪽이든 봇 채팅의 질문 카드는 이 경로로 넘어오지 않습니다.
+- **orca-helm-ask 질문 훅(PR #7): 봇 채팅에서는 동작하지 않습니다(3절 실측).** Claude 프로필 다섯 곳 모두에 `orca-helm-ask@orca-helm` 이 설치돼 있지만, 봇이 `AskUserQuestion` 카드를 띄워도 훅이 쓰는 `~/.orca-helm/ask/` 파일이 생기지 않았습니다. 훅이 아예 돌지 않았는지, `ORCA_WORKSPACE_ID` 가 없어 바로 물러났는지는 구분하지 못했습니다. 어느 쪽이든 봇 채팅의 질문 카드는 이 경로로 넘어오지 않습니다.
 - 대기 중인 질문 카드의 글은 `orca agent read <채팅 세션 id> --limit 3 --json` 에서 `{"kind":"question","text":"…","pending":true}` 로 읽힙니다. 선택지는 나오지 않습니다. 채팅 세션 id는 이벤트 `paneKey` 의 `structured-agent-session-<id>:` 부분입니다.
 
 ### 1.5 나가는 쪽: orca-helm에서 봇에게 일 넣기
