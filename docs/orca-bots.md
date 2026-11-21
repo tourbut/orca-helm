@@ -71,7 +71,7 @@ Orca 1.4.265의 Orca Bots를 orca-helm(Grok Bot 연동)에 붙일 수 있는지 
 ### 2.2 들어오는 쪽
 
 - **A. 채팅 상태(코드 변경 없음):** 기존 `agent.status.changed` 전달이 그대로 처리합니다. `worktree` 는 봇 이름, `repo`·`branch`·`tail`·`terminalId` 는 `null` 입니다(채팅은 터미널이 아님). 봇이 카드를 띄우면 `blocked`, 턴이 끝나면 `done (success)` 입니다. Grok Bot은 사람에게 "Orca에서 승인/답 필요"라고 전하기만 합니다.
-- **B. 봇 item Needs you(구현함):** 봇 채팅이 `working` 이 아닌 상태로 알려지면, 워커가 `bot.json` 으로 봇을 알아보고 `orca bot item list --bot <이름> --status needs-you` 를 읽습니다. 라우트마다 item 하나를 질문(`question.eventId`) 하나에 한 번씩 `bot.needs_you` 로 보냅니다. 같은 item에 새로 물으면 다시 보내고, 닫힌 item은 잊습니다. 보낸 기록은 FullOps 사건과 같은 저장소 키에 남아 워커가 다시 떠도 유지됩니다. 자유 텍스트의 비밀값은 다른 알림과 같은 규칙으로 가립니다.
+- **B. 봇 item Needs you(구현함):** 봇 채팅이 `working` 이 아닌 상태로 알려지면, 워커가 `bot.json` 으로 봇을 알아보고 `orca bot item list --bot <이름> --status needs-you` 를 읽습니다. 라우트마다 item 하나를 질문(`question.eventId`) 하나에 한 번씩 `bot.needs_you` 로 보냅니다. 라우트가 그 봇을 처음 볼 때(설치 직후, 봇을 새로 넣었을 때) 열려 있던 item은 본 것으로 기록만 하고 보내지 않습니다. 봇 채팅의 상태 알림은 그 라우트의 첫 item 알림에 `agentStatus` 로 실려 POST 하나로 갑니다. 같은 item에 새로 물으면 다시 보내고, 닫힌 item은 잊습니다. 보낸 기록은 FullOps 사건과 같은 저장소 키에 남아 워커가 다시 떠도 유지됩니다. 자유 텍스트의 비밀값은 다른 알림과 같은 규칙으로 가립니다.
 - **C. orca-helm-ask:** 봇 채팅에는 걸리지 않습니다(3절). 봇 채팅의 질문 카드는 A의 `blocked` 알림으로만 알 수 있습니다.
 
 `bot.needs_you` 예(실측에서 받은 모양, `text` 는 고친 뒤 형식):
@@ -90,7 +90,7 @@ Orca 1.4.265의 Orca Bots를 orca-helm(Grok Bot 연동)에 붙일 수 있는지 
     "answerable": true
   },
   "chat": "<chat id>",
-  "reply": "orca-helm bot \"helm-probe\" --item 2 --text <answer>",
+  "reply": "orca-helm bot 'helm-probe' --item 2 --text <answer>",
   "repo": null, "worktree": "helm-probe", "branch": null, "route": "probe", "host": "<PC 이름>"
 }
 ```

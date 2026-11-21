@@ -138,7 +138,7 @@ Output is short text by default; `--json` prints one line of JSON.
 | `wait <target> [--timeout 600] [--interval 5] [--for agent\|tui-idle\|exit] [--fresh 60]` | See [wait](#wait). Seconds |
 | `decisions [repo-query] [--all]` | One line per open decision of every FullOps repo (`--all` adds closed ones): `<repo>/<decision ID>  <status>  <task key>  "<question>"  [options]  sha:<SHA>  until:<expiry>  risks:<reasons>  blocks:<waiting work>  origin:<entry point>`. `--json` prints `{"decisions":[...]}` (FullOps records plus `repo` and `repoId`). See [FullOps](#fullops) |
 | `decide <[repo/]D###> --answer <answer> --by <who answered> [--sha <SHA>]` | Closes a FullOps decision. Prints `answered <repo>/<ID>: <answer>`, or `already <status> <repo>/<ID>: <earlier answer>` when it was closed already. Decision IDs are numbered per repo, so write `<repo>/D003` when several repos have that ID. `--json` prints FullOps's result plus `repo` |
-| `answer <Q########> (--answer <label> | --answers <json>) --by <who answered>` | Answers a Claude Code question card (the `claude.question` alert). See [Question cards](#question-cards). Prints `answered <ID>: <answer> | <answer>` |
+| `answer <Q########> (--answers <json> | --answer <label>) --by <who answered>` | Answers a Claude Code question card (the `claude.question` alert). See [Question cards](#question-cards). Prints `answered <ID>: <answer> | <answer>` |
 | `bot <bot name> (--file <f> | --text <t>) [--item <n> | --chat <id|new>] [--type handoff|question|status] [--subject <subject>]` | Mails an Orca bot on this PC (`orca bot list`) through `orca orchestration send --to bot:<name>`. The default `handoff` gives it work; `--item <n>` answers its Needs you item (the `bot.needs_you` alert). See [docs/orca-bots.md](docs/orca-bots.md) |
 | `raw [--] <args>` | Passes the args to the same orca binary and returns its exit code. The `--` is optional |
 | `help`, `--help`, `--version` | Help and version |
@@ -194,7 +194,8 @@ Install it from Claude Code in an Orca terminal. The grokbot-notify plugin must 
 
 1. When Claude asks, the hook (`bin/ask-hook.mjs`) writes the question to `~/.orca-helm/ask/<ID>.json` before the card shows.
 2. grokbot-notify sends one `claude.question` alert to each route of that workspace.
-3. The bot passes the person's choice on with `orca-helm answer <ID> --answer <label> --by <who answered>`. For several questions or a multiSelect one, use `--answers '["React",["lint","test"]]'` in question order.
+3. The bot passes the number of the person's choice (from 1) on with `orca-helm answer <ID> --answers '[2]' --by <who answered>`. For several questions or a multiSelect one, use `--answers '[2,[1,2]]'` in question order. A label is model-written text, so the alert's `reply` takes numbers only and a bot never puts a label in a shell command. `--answer <label>` and labels in `--answers` still work.
+   - When the hook is gone (Esc, Claude Code exited), `answer` refuses with "not open" even before `until`. The hook leaves its pid in the question file.
 4. The hook hands the answer to Claude Code, which goes on without the card.
 
 While the hook waits, the terminal shows no card. The hook steps aside and the card shows as usual:

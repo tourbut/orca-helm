@@ -138,7 +138,7 @@ Grok Bot은 PC 셸에서 orca-helm을 호출합니다. Windows는 `C:\tools\orca
 | `wait <target> [--timeout 600] [--interval 5] [--for agent\|tui-idle\|exit] [--fresh 60]` | 아래 [wait](#wait) 참고. 초 단위 |
 | `decisions [repo-query] [--all]` | FullOps 저장소마다 열린 결정을 한 줄씩(`--all` 은 닫힌 것까지): `<repo>/<결정 ID>  <상태>  <과제 키>  "<질문>"  [선택지]  sha:<SHA>  until:<만료>  risks:<사유>  blocks:<기다리는 작업>  origin:<진입점>`. `--json` 은 `{"decisions":[...]}` (FullOps 기록에 `repo`, `repoId` 추가). 아래 [FullOps](#fullops) 참고 |
 | `decide <[repo/]D###> --answer <답> --by <답한 사람> [--sha <SHA>]` | FullOps 결정을 닫습니다. 출력 `answered <repo>/<ID>: <답>`, 이미 닫혔으면 `already <상태> <repo>/<ID>: <기존 답>`. 결정 ID는 저장소마다 매기므로 여러 저장소에 같은 ID가 있으면 `<repo>/D003` 으로 씁니다. `--json` 은 FullOps 결과에 `repo` 추가 |
-| `answer <Q########> (--answer <label> | --answers <json>) --by <답한 사람>` | Claude Code 질문 카드(`claude.question` 알림)에 답합니다. 아래 [질문 카드](#질문-카드) 참고. 출력 `answered <ID>: <답> | <답>` |
+| `answer <Q########> (--answers <json> | --answer <label>) --by <답한 사람>` | Claude Code 질문 카드(`claude.question` 알림)에 답합니다. 아래 [질문 카드](#질문-카드) 참고. 출력 `answered <ID>: <답> | <답>` |
 | `bot <봇 이름> (--file <f> | --text <t>) [--item <n> | --chat <id|new>] [--type handoff|question|status] [--subject <제목>]` | 이 PC의 Orca 봇(`orca bot list`)에 메일을 보냅니다(`orca orchestration send --to bot:<이름>`). 기본 `handoff` 는 일을 맡기고, `--item <n>` 은 그 봇의 Needs you 항목(알림 `bot.needs_you`)에 답합니다. 자세한 내용은 [docs/orca-bots.md](docs/orca-bots.md) |
 | `raw [--] <args>` | 같은 orca 바이너리에 그대로 전달하고 종료 코드도 그대로 돌려줍니다. `--` 는 없어도 됩니다 |
 | `help`, `--help`, `--version` | 도움말, 버전 |
@@ -194,7 +194,8 @@ Orca 터미널의 Claude Code에서 설치합니다. grokbot-notify 플러그인
 
 1. Claude가 질문하면 hook(`bin/ask-hook.mjs`)이 카드를 띄우기 전에 질문을 `~/.orca-helm/ask/<ID>.json` 에 씁니다.
 2. grokbot-notify가 그 워크스페이스의 route마다 `claude.question` 알림을 한 번 보냅니다.
-3. 봇이 사람이 고른 답을 `orca-helm answer <ID> --answer <label> --by <답한 사람>` 으로 넘깁니다. 질문이 여럿이거나 multiSelect면 질문 순서대로 `--answers '["React",["lint","test"]]'` 입니다.
+3. 봇이 사람이 고른 선택지 번호(1부터)를 `orca-helm answer <ID> --answers '[2]' --by <답한 사람>` 으로 넘깁니다. 질문이 여럿이거나 multiSelect면 질문 순서대로 `--answers '[2,[1,2]]'` 입니다. label은 모델이 쓴 글이라 봇이 셸 명령에 넣지 않도록 알림의 `reply` 는 번호만 받습니다. `--answer <label>` 과 label이 든 `--answers` 도 여전히 받습니다.
+   - hook이 죽었으면(Esc, Claude Code 종료) `until` 전이라도 `answer` 는 "not open"으로 거절합니다. hook이 질문 파일에 자기 pid를 남깁니다.
 4. hook이 그 답을 Claude Code에 넘기고, 카드 없이 이어집니다.
 
 hook이 기다리는 동안 터미널에는 카드가 보이지 않습니다. 다음 경우에는 hook이 물러나 평소처럼 카드가 뜹니다.

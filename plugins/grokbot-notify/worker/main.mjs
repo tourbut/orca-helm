@@ -627,13 +627,16 @@ export default async function activate(orca) {
       try {
         const where = await workspaceInfo(orca, question.workspaceId)
         const routes = readRoutes(await readSettings(orca)).filter((route) => matchesWorkspace(route.workspaces, where))
-        const sent = []
-        for (const route of routes) {
-          const payload = questionPayload(question, { ...where, worktree: where.name, route: route.name, host: os.hostname() })
-          const status = await deliver(orca, route, payload, await authFor(orca, route))
-          if (status >= 200 && status < 300) sent.push(route.name)
-          results.push({ route: route.name, question: id, status })
-        }
+        // All routes at once: one slow bot must not keep the hook past its wait for <id>.sent.json.
+        const tried = await Promise.all(
+          routes.map(async (route) => {
+            // The ID checked in the file name, not the one inside the file.
+            const payload = questionPayload({ ...question, id }, { ...where, worktree: where.name, route: route.name, host: os.hostname() })
+            return { route: route.name, question: id, status: await deliver(orca, route, payload, await authFor(orca, route)) }
+          })
+        )
+        results.push(...tried)
+        const sent = tried.filter(({ status }) => ok(status)).map(({ route }) => route)
         saveJson(askFile(dir, id, 'sent'), { routes: sent, at: new Date().toISOString() })
       } catch (err) {
         orca.log(`question forward failed: ${errText(err)}`)
@@ -700,9 +703,11 @@ export default async function activate(orca) {
   /**
    * An Orca bot's items under Needs you, read when its chat settles: a bot asks by setting an item to needs-you and
    * ending its turn. A route takes a bot by its name among the route's workspaces (a bot's chat is a folder workspace
-   * named after it). Asked again on the same item (a new question event), it goes again.
+   * named after it). Asked again on the same item (a new question event), it goes again. The first look for a route
+   * (just installed, or the bot just named) records what is open as seen, so old items do not all go at once. The
+   * chat's terminal alert rides along in a route's first item, like FullOps alerts.
    */
-  async function forwardBotItems(event) {
+  async function forwardBotItems(event, terminal, carried) {
     if (event.state === 'working' || !String(event.workspaceId ?? '').startsWith('folder:')) return []
     try {
       const info = await workspaceInfo(orca, event.workspaceId)
@@ -716,7 +721,18 @@ export default async function activate(orca) {
         id: `${item.uid}@${item.question?.eventId ?? item.lastEventId}`,
         payload: (where) => botItemPayload(item, bot.name, where),
       }))
-      await announceOnce(routes, `bot:${bot.id}`, alerts, info, { counter: 'bot' })
+      const scope = `bot:${bot.id}`
+      const seen = `${scope}#*`
+      let primed = false
+      for (const route of routes) {
+        const sent = announced.get(route.key) ?? announced.set(route.key, new Set()).get(route.key)
+        if (sent.has(seen)) continue
+        for (const key of [seen, ...alerts.map((alert) => `${scope}#${alert.id}`)]) sent.add(key)
+        primed = true
+      }
+      if (primed) await saveAnnounced()
+      const ride = (route) => terminal?.due.find((due) => due.route.key === route.key)
+      await announceOnce(routes, scope, alerts, info, { counter: 'bot', forgets: (key) => key !== seen, ride, carried })
       return alerts
     } catch (err) {
       orca.log(`bot item forward failed: ${errText(err)}`)
@@ -726,10 +742,11 @@ export default async function activate(orca) {
 
   orca.events.on('agent.status.changed', async (event) => {
     const terminal = await terminalAlert(event)
-    const result = await sendTerminal(terminal, await forwardFullOps(event, terminal))
+    const carried = await forwardFullOps(event, terminal)
+    await forwardBotItems(event, terminal, carried)
+    const result = await sendTerminal(terminal, carried)
     await persist()
     await forwardQuestions()
-    await forwardBotItems(event)
     return result
   })
 

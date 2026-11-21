@@ -46,6 +46,7 @@ try {
     id,
     workspaceId,
     terminal: process.env.ORCA_TERMINAL_HANDLE ?? null,
+    pid: process.pid,
     questions: tool.questions,
     createdAt: new Date(start).toISOString(),
     until: new Date(until).toISOString(),
