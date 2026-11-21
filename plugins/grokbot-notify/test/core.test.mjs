@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import { parseStates, createDebouncer as createChecker, buildPayload, repoNameFromGit, gitCommonDir, parseWorkspaces, matchesWorkspace, parseRoutes, routeLine, upsertRouteLine, removeRouteLines, routeProblem, workspaceOptions, maskSecrets, tailNeedsInput, tailText, screenFields, isStartScreen, RECORD_MS } from '../worker/core.mjs'
+import { parseStates, createDebouncer as createChecker, buildPayload, repoNameFromGit, gitCommonDir, parseWorkspaces, matchesWorkspace, parseRoutes, routeLine, upsertRouteLine, removeRouteLines, routeProblem, workspaceOptions, maskSecrets, tailNeedsInput, tailText, screenText, screenFields, isStartScreen, RECORD_MS } from '../worker/core.mjs'
 
 /** The repeat check as a yes/no, for the tests that only ask whether it goes. */
 const createDebouncer = (...args) => {
@@ -90,6 +90,12 @@ test('debouncer records survive a worker restart and expire after RECORD_MS', ()
   assert.deepEqual(second.save(30 + RECORD_MS), {})
 })
 
+test('debouncer skips a saved record whose sent entries are not objects', () => {
+  const check = createChecker({ t: { state: 'done', at: 0, sent: { done: 'broken' } } }, 10)
+  assert.equal(check('t', 'done', 20, 0, null).why, 'new')
+  check.forget('t', 'done')
+})
+
 test('maskSecrets hides common tokens and leaves ordinary text', () => {
   const hex = 'ab12'.repeat(10)
   const b64 = 'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0fI+/x='
@@ -168,6 +174,10 @@ test('isStartScreen: Claude Code started and nothing said yet', () => {
   assert.equal(isStartScreen(fresh), true)
   assert.equal(isStartScreen(`${fresh}\n> 안녕\n● 안녕하세요.`), false)
   assert.equal(isStartScreen(`${fresh}\nDo you trust the files in this folder?`), false)
+  // A first turn that failed: the error sits on a `⎿` line, which plainLines drops, so only the prompt is left.
+  for (const error of ['API Error: 529', 'Claude usage limit reached', 'Interrupted · What should Claude do instead?']) {
+    assert.equal(isStartScreen(screenText([...fresh.split('\n'), '> fix the login bug', `  ⎿  ${error}`])), false, error)
+  }
   assert.equal(isStartScreen('● 끝났습니다.'), false)
   assert.equal(isStartScreen(null), false)
 })

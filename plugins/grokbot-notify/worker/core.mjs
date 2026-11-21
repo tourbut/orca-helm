@@ -34,7 +34,8 @@ export function createDebouncer(saved = null, nowMs = Date.now()) {
   /** @type {Map<string, { state: string | null, at: number, sent: Record<string, { tailKey: string | null, at: number, reminded: boolean, failed?: boolean }> }>} */
   const last = new Map()
   for (const [key, entry] of Object.entries(saved ?? {})) {
-    if (entry?.sent && typeof entry.sent === 'object' && nowMs - entry.at < RECORD_MS) last.set(key, entry)
+    const sane = entry?.sent && typeof entry.sent === 'object' && Object.values(entry.sent).every((sent) => sent && typeof sent === 'object')
+    if (sane && nowMs - entry.at < RECORD_MS) last.set(key, entry)
   }
 
   /**
@@ -440,7 +441,9 @@ export function screenFields(text) {
  * that (a fresh agent, or a slash command with no reply) tells a person nothing.
  */
 export function isStartScreen(text) {
-  return Boolean(text) && /Claude Code v\d/.test(text) && !new RegExp(REPLY_START.source, 'm').test(text) && !tailNeedsInput(text)
+  // A typed prompt means a turn ran: one that ended in an API error, usage limit or interrupt shows only on `⎿` lines,
+  // which plainLines drops, so the screen would otherwise look fresh.
+  return Boolean(text) && /Claude Code v\d/.test(text) && !new RegExp(REPLY_START.source, 'm').test(text) && !/^[ \t]*[❯›>][ \t]+\S/m.test(text) && !tailNeedsInput(text)
 }
 
 /**
