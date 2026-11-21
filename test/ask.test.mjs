@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -9,6 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { answersFor, askFile, saveJson } from '../lib/ask.mjs'
 import { parseCommandLine } from '../lib/core.mjs'
 import { main } from '../lib/cli.mjs'
+import { questionPayload } from '../plugins/grokbot-notify/worker/core.mjs'
 
 const HOOK = fileURLToPath(new URL('../bin/ask-hook.mjs', import.meta.url))
 const QUESTIONS = [
@@ -21,6 +22,43 @@ test('answersFor maps each question to its label, joins a multiSelect, and refus
   assert.throws(() => answersFor(QUESTIONS, ['Vue']), /expected 2 answer/)
   assert.throws(() => answersFor(QUESTIONS, ['Svelte', 'lint']), /"Svelte" is not an option of "Which framework\?": React \/ Vue/)
   assert.throws(() => answersFor(QUESTIONS, [['React', 'Vue'], 'lint']), /takes one label/)
+  // 1-based option numbers, so a bot never has to put a label on its command line.
+  assert.deepEqual(answersFor(QUESTIONS, [2, [1, 2]]), { 'Which framework?': 'Vue', 'Which checks?': 'lint, test' })
+  assert.throws(() => answersFor(QUESTIONS, [3, 1]), /has options 1 to 2, not 3/)
+  assert.throws(() => answersFor(QUESTIONS, [1.5, 1]), /not 1.5/)
+})
+
+test('a hostile label never reaches a command line: the reply takes option numbers, the answer keeps the label as text', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orca-helm-ask-'))
+  const label = `x"; echo pwned > pwned.txt; "$(whoami)' & echo pwned > pwned.txt`
+  const questions = [{ question: 'Ship?', multiSelect: false, options: [{ label }, { label: 'no' }] }]
+  const until = new Date(Date.now() + 60_000).toISOString()
+  saveJson(askFile(dir, 'Q00000001'), { id: 'Q00000001', workspaceId: 'w', questions, until, pid: process.pid })
+  const payload = questionPayload({ id: 'Q00000001', questions, until }, { repo: 'shop' })
+  assert.equal(payload.reply, "orca-helm answer Q00000001 --answers '[<option number>]' --by <who>")
+  // The way a bot runs it: no shell between it and node.
+  const bin = fileURLToPath(new URL('../bin/orca-helm.mjs', import.meta.url))
+  const out = execFileSync(process.execPath, [bin, 'answer', 'Q00000001', '--answers', '[1]', '--by', 'shin', '--json'], {
+    cwd: dir,
+    env: { ...process.env, ORCA_HELM_ASK_DIR: dir },
+    shell: false,
+    encoding: 'utf8',
+  })
+  assert.deepEqual(JSON.parse(out).answers, { 'Ship?': label })
+  assert.equal(fs.existsSync(path.join(dir, 'pwned.txt')), false)
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test("answer refuses a card whose hook was killed: its file outlives it, but nobody would read the answer", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orca-helm-ask-'))
+  const until = new Date(Date.now() + 60_000).toISOString()
+  const dead = spawnSync(process.execPath, ['-e', '']).pid
+  saveJson(askFile(dir, 'Q00000002'), { id: 'Q00000002', workspaceId: 'w', questions: QUESTIONS.slice(0, 1), until, pid: dead })
+  const refused = await answer(dir, ['Q00000002', '--answers', '[1]', '--by', 'shin'])
+  assert.equal(refused.code, 1)
+  assert.match(refused.stderr, /is not open/)
+  assert.equal(fs.existsSync(askFile(dir, 'Q00000002', 'answer')), false)
+  fs.rmSync(dir, { recursive: true, force: true })
 })
 
 /** Run the hook with `input` on stdin in an Orca-like env; resolves { code, stdout } when it exits. */
@@ -72,6 +110,7 @@ test('ask-hook: a bot takes the card, orca-helm answer validates it, and the hoo
   const wrong = await answer(dir, [id, '--answers', '["Vue","deploy"]', '--by', 'shin'])
   assert.equal(wrong.code, 1)
   assert.match(wrong.stderr, /"deploy" is not an option/)
+  assert.equal(question.pid > 0, true, 'the hook records its pid')
   const ok = await answer(dir, [id, '--answers', '["Vue",["lint","test"]]', '--by', 'shin'])
   assert.equal(ok.code, 0, ok.stderr)
   assert.equal(ok.stdout, `answered ${id}: Vue | lint, test\n`)

@@ -133,11 +133,18 @@ const fullopsPlace = ({ repo, worktree, branch, route, host }) => ({
 })
 const shortSha = (sha) => (sha ? String(sha).slice(0, 12) : null)
 
+/**
+ * Single quotes, every quote inside doubled: literal in PowerShell (Grok Bot's shell), which also takes U+2018-U+201B
+ * as single quotes. In sh a doubled quote only drops out; no text gets out of the quotes either way.
+ */
+export const shellQuote = (text) => `'${String(text).replace(/['\u2018-\u201B]/g, '$&$&')}'`
+
 /** A Claude Code question card held by bin/ask-hook.mjs: the questions, one relayable line, and how to answer by `until`. */
 export function questionPayload(question, where) {
   const questions = maskRecord(question.questions ?? [])
-  const labels = (item) => (item.options ?? []).map((option) => option.label).join(' / ')
+  const labels = (item) => (item.options ?? []).map((option, i) => `${i + 1} ${option.label}`).join(' / ')
   const single = questions.length === 1 && !questions[0].multiSelect
+  // Option numbers only: a label is model-written text, and a bot that pasted it into a shell command could be steered.
   return {
     event: 'claude.question',
     text: `${fullopsLabel(where)}: question waiting - ${questions.map((item) => `${item.question} [${labels(item)}]`).join('; ')}`,
@@ -146,8 +153,8 @@ export function questionPayload(question, where) {
     terminal: question.terminal ?? null,
     until: question.until ?? null,
     reply: single
-      ? `orca-helm answer ${question.id} --answer <label> --by <who>`
-      : `orca-helm answer ${question.id} --answers <JSON array: a label per question, an array of labels for multiSelect> --by <who>`,
+      ? `orca-helm answer ${question.id} --answers '[<option number>]' --by <who>`
+      : `orca-helm answer ${question.id} --answers '[<option number per question; an array of numbers for multiSelect>]' --by <who>`,
     ...fullopsPlace(where),
   }
 }
@@ -255,7 +262,14 @@ export function botItemPayload(item, botName, where) {
     title,
     question,
     chat: item.chat?.id ?? null,
-    reply: `orca-helm bot "${botName}" --item ${item.number} --text <answer>`,
+    // Choices go back as option numbers: a label is the bot's (a model's) text and must not reach a shell command.
+    reply: `orca-helm bot ${shellQuote(botName)} --item ${item.number} ${
+      !question?.ask?.questions?.some((ask) => ask.options?.length)
+        ? '--text <answer>'
+        : question.ask.questions.length === 1 && !question.ask.questions[0].multi
+          ? "--answers '[<option number>]'"
+          : "--answers '[<option number per question; an array of numbers for a multi question>]'"
+    }`,
     ...fullopsPlace(where),
   }
 }

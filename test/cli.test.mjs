@@ -290,3 +290,43 @@ test('issue #2: in a FullOps repo, work for a worker and start go to the coordin
   assert.match(start.stderr, /shop is a FullOps repo/)
   assert.equal((await run('start', 'shop', '--name', 'x', '--agent', 'claude', '--text', 'go', '--bypass-fullops')).code, 0)
 })
+
+test('bot: each value one --x= token straight to orca, an item answer, and --item / empty text refused first', async () => {
+  const script = { 'orchestration send': { result: {} } }
+  const run = (...argv) => runWithFakeOrca(script, [...argv, '--json'], { orchestration: FAKE })
+  const name = `x"; whoami; "`
+  const body = 'a; $(whoami) `id`'
+  const sent = await run('bot', name, '--text', body)
+  assert.equal(sent.code, 0, sent.stderr)
+  assert.deepEqual(JSON.parse(sent.stdout).argv, [`--to=bot:${name}`, '--type=handoff', `--subject=${body}`, `--body=${body}`, '--json'])
+  const item = await run('bot', '쿠어', '--item', '3', '--text', 'main')
+  assert.deepEqual(JSON.parse(item.stdout).argv, ['--to=bot:쿠어', '--type=handoff', '--subject=Answer on item #3', '--body=main', '--item=3', '--json'])
+  for (const [argv, why] of [
+    [['--item', '1.5', '--text', 'x'], /--item takes an item number/],
+    [['--item', '0', '--text', 'x'], /--item takes an item number/],
+    [['--text', '  '], /non-empty --text/],
+  ]) {
+    const refused = await run('bot', '쿠어', ...argv)
+    assert.equal(refused.code, 1)
+    assert.match(refused.stderr, why)
+  }
+})
+
+test('bot --answers: the item\'s option by number, sent as its label; a wrong number or a missing item refused', async () => {
+  const items = [{ number: 3, question: { ask: { questions: [{ prompt: '어디로?', options: [{ label: 'main' }, { label: "dev'; whoami" }] }, { prompt: '검사?', multi: true, options: [{ label: 'lint' }, { label: 'test' }] }] } } }]
+  const script = { 'orchestration send': { result: {} }, 'bot item': { body: { ok: true, result: { items } } } }
+  const run = (...argv) => runWithFakeOrca(script, ['bot', '쿠어', ...argv, '--json'], { orchestration: FAKE, bot: FAKE })
+  const sent = await run('--item', '3', '--answers', '[2,[1,2]]')
+  assert.equal(sent.code, 0, sent.stderr)
+  assert.ok(JSON.parse(sent.stdout).argv.includes("--body=어디로?: dev'; whoami\n검사?: lint, test"))
+  for (const [argv, why] of [
+    [['--item', '3', '--answers', '[3,[1]]'], /has options 1 to 2, not 3/],
+    [['--item', '9', '--answers', '[1,[1]]'], /item #9 of bot:쿠어 is not waiting/],
+    [['--answers', '[1]'], /needs --item/],
+    [['--item', '3', '--answers', '[1]', '--text', 'x'], /either --answers or --text/],
+  ]) {
+    const refused = await run(...argv)
+    assert.equal(refused.code, 1)
+    assert.match(refused.stderr, why)
+  }
+})
