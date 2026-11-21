@@ -25,7 +25,8 @@ const groupOf = (state) => (state === 'waiting' ? 'done' : state)
 /**
  * Repeat check per terminal, kept across worker restarts through `save()` and `saved`. A state goes out when its tail
  * differs from the last one sent for it, so done -> working -> done on the same screen stays quiet; with no tail to
- * compare (unreadable, `working`) another state in between counts as a new turn. The same state and tail reported on
+ * compare (unreadable, `working`) another state in between counts as a new turn, and so it always does for `blocked`:
+ * a long permission prompt fills the tail alone, so asking it again looks the same. The same state and tail reported on
  * and on goes once more as a reminder after `remindMs` without another state; 0 never reminds. Terminal ids are never
  * reused. Returns `{ send, why }`: new, changed, turn, retry or reminder when it goes, same or flap when held.
  * @param {Record<string, unknown> | null} [saved] what `save()` returned
@@ -56,7 +57,7 @@ export function createDebouncer(saved = null, nowMs = Date.now()) {
         ? 'retry'
         : tailKey !== null && tailKey !== prev.tailKey
           ? 'changed'
-          : tailKey === null && moved
+          : (tailKey === null || state === 'blocked') && moved
             ? 'turn'
             : !moved && !prev.reminded && remindMs > 0 && nowMs - prev.at >= remindMs
               ? 'reminder'

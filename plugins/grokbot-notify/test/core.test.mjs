@@ -71,6 +71,11 @@ test('debouncer: the same output in another state, or after a short working, is 
   check.forget('t', 'blocked')
   assert.equal(why('t', 'blocked', 7, 0, 'b'), 'retry')
   assert.equal(why('t', 'blocked', 8, 0, 'b'), 'same')
+  // A permission prompt of 500+ characters fills the tail alone, so asking the same long command again after a yes
+  // looks like the same screen: a blocked that follows another state still goes, or the agent waits unseen.
+  assert.equal(why('t', 'working', 9, 0), 'turn')
+  assert.equal(why('t', 'blocked', 10, 0, 'b'), 'turn')
+  assert.equal(why('t', 'blocked', 11, 0, 'b'), 'same')
   // Without a tail another state in between still tells a new turn.
   assert.equal(why('u', 'done', 0, 0), 'new')
   assert.equal(why('u', 'working', 1, 0), 'new')
