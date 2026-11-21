@@ -1,7 +1,8 @@
 import { test } from 'node:test'
+import { execFileSync } from 'node:child_process'
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import { parseStates, createDebouncer as createChecker, buildPayload, repoNameFromGit, gitCommonDir, parseWorkspaces, matchesWorkspace, parseRoutes, routeLine, upsertRouteLine, removeRouteLines, routeProblem, workspaceOptions, maskSecrets, tailNeedsInput, tailText, screenText, screenFields, isStartScreen, RECORD_MS } from '../worker/core.mjs'
+import { parseStates, createDebouncer as createChecker, buildPayload, repoNameFromGit, gitCommonDir, parseWorkspaces, matchesWorkspace, parseRoutes, routeLine, upsertRouteLine, removeRouteLines, routeProblem, workspaceOptions, maskSecrets, tailNeedsInput, tailText, screenText, screenFields, isStartScreen, RECORD_MS, shellQuote, botItemPayload } from '../worker/core.mjs'
 
 /** The repeat check as a yes/no, for the tests that only ask whether it goes. */
 const createDebouncer = (...args) => {
@@ -264,4 +265,34 @@ test('panel edits: a line is replaced in place or appended, removed by name, and
   assert.equal(routeProblem({ name: 'a', url: 'https://a', workspaces: ['x,y'] }), 'a workspace cannot contain , or |')
   assert.equal(routeProblem({ name: 'a', url: 'https://a', workspaces: ['x'] }), null)
   assert.deepEqual(workspaceOptions([{ repo: 'shop', name: 'main' }, { repo: 'SHOP', name: 'dev' }, { repo: null, name: 'notes' }]), ['notes', 'shop'])
+})
+
+test('shellQuote: no bot name gets out of the quotes, ASCII or curly, in the PowerShell that is here', (t) => {
+  const names = ["x'; Write-Output INJECTED; #", 'x’; Write-Output INJECTED; #', 'x‘‚‛$(whoami)`n', '쿠어']
+  assert.equal(shellQuote(names[1]), "'x’’; Write-Output INJECTED; #'")
+  for (const shell of ['pwsh', 'powershell']) {
+    for (const name of names) {
+      let out
+      try {
+        // The string's length comes back only when the quoted name parses as one literal.
+        out = execFileSync(shell, ['-NoProfile', '-NonInteractive', '-Command', `(${shellQuote(name)}).Length`], { encoding: 'utf8', windowsHide: true })
+      } catch (err) {
+        if (err.code === 'ENOENT') {
+          t.diagnostic(`${shell} not found`)
+          break
+        }
+        throw err
+      }
+      assert.equal(out.trim(), String(name.length), `${shell}: ${name}`)
+    }
+  }
+})
+
+test('botItemPayload: choices are answered by number, a question without choices by text', () => {
+  const ask = (multi, count = 1) => ({ eventId: 'e1', text: 'q', ask: { context: 'c', questions: Array.from({ length: count }, () => ({ prompt: 'p', options: [{ label: "a'; rm -rf ~" }], multi })) } })
+  const reply = (question) => botItemPayload({ number: 4, title: 't', question }, "o'k", {}).reply
+  assert.equal(reply(ask(false)), "orca-helm bot 'o''k' --item 4 --answers '[<option number>]'")
+  assert.match(reply(ask(true)), /--answers '\[<option number per question; an array of numbers for a multi question>\]'$/)
+  assert.match(reply(ask(false, 2)), /--answers '\[<option number per question/)
+  assert.equal(reply({ eventId: 'e1', text: 'free?' }), "orca-helm bot 'o''k' --item 4 --text <answer>")
 })

@@ -710,7 +710,9 @@ test("an Orca bot's Needs you item goes once to the route that names the bot, an
   // Orca's `text` lists the choices under the question; `ask.context` is the words alone.
   const question = (eventId) => ({ eventId, text: '확인 부탁\n\n어느 쪽으로 머지할까요?\n- main\n- dev', ask: { context: '확인 부탁', questions: [ask] } })
   const item = (eventId) => ({ uid: 'u1', number: 3, title: 'PR #9 머지', status: 'needs_you', chat: { id: 'c1' }, question: question(eventId) })
-  items([item('e4')])
+  // Open before the first look: #1 is old news, #3 the question the chat just settled on.
+  const old = { ...item('e2'), uid: 'u0', number: 1 }
+  items([old, item('e4')])
   const workspaceId = 'folder:f1'
   const { orca, settings, emit } = mockOrca([{ id: workspaceId, kind: 'folder', name: '쿠어', branch: null, path: folder }])
   settings.routes = `풀로 | 쿠어 | ${stub.url} | Bearer a1\n노리 | jevpet | ${stub.url} | Bearer b2`
@@ -719,26 +721,36 @@ test("an Orca bot's Needs you item goes once to the route that names the bot, an
   const settled = { workspaceId, paneKey: 'structured-agent-session-c1:x', title: '쿠어', state: 'done', receivedAt: 1 }
 
   await emit(settled)
-  assert.equal(stub.received.length, 0, 'what is open at the first look is recorded, not sent')
-  items([item('e5')]) // asked anew after that
+  assert.deepEqual(stub.received.map(({ body }) => body.item), [3], 'the first look sends the newest item only')
+  items([old, item('e5')]) // asked anew after that
   await emit(settled)
   await emit(settled)
-  assert.equal(stub.received.length, 1)
-  const body = stub.received[0].body
+  assert.equal(stub.received.length, 2)
+  const body = stub.received[1].body
   assert.equal(body.event, 'bot.needs_you')
   assert.equal(body.route, '풀로')
   assert.equal(body.text, '쿠어 #3: needs you - PR #9 머지: 확인 부탁 (어느 쪽으로 머지할까요? [main / dev])')
-  assert.equal(body.reply, "orca-helm bot '쿠어' --item 3 --text <answer>")
+  assert.equal(body.reply, "orca-helm bot '쿠어' --item 3 --answers '[<option number>]'")
   assert.doesNotMatch(JSON.stringify(body), /s3cret-token/)
 
   items([item('e7')]) // asked again on the same item
   await emit({ ...settled, state: 'working' }) // a working chat is not read
-  assert.equal(stub.received.length, 1)
-  await emit(settled)
   assert.equal(stub.received.length, 2)
+  await emit(settled)
+  assert.equal(stub.received.length, 3)
 
   // The chat's own alert rides in the item alert: one POST, not two.
   items([item('e8')])
   await emit({ ...settled, state: 'blocked', receivedAt: 2 })
-  assert.deepEqual(stub.received.slice(2).map(({ body }) => [body.event, body.agentStatus?.state]), [['bot.needs_you', 'blocked']])
+  assert.deepEqual(stub.received.slice(3).map(({ body }) => [body.event, body.agentStatus?.state]), [['bot.needs_you', 'blocked']])
+
+  // Upgraded from 0.6.0: a record of this bot (no first-look marker) means it was seen, so nothing is held back.
+  stub.received.length = 0
+  items([old, item('e9')])
+  const upgraded = mockOrca([{ id: workspaceId, kind: 'folder', name: '쿠어', branch: null, path: folder }], null, { fullopsSent: { 풀로: ['bot:b1#u1@e5'] } })
+  upgraded.settings.routes = settings.routes
+  upgraded.settings.states = 'blocked'
+  await activate(upgraded.orca)
+  await upgraded.emit(settled)
+  assert.deepEqual(stub.received.map(({ body }) => body.item).sort(), [1, 3])
 })

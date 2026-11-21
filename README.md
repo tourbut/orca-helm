@@ -139,7 +139,7 @@ Grok Bot은 PC 셸에서 orca-helm을 호출합니다. Windows는 `C:\tools\orca
 | `decisions [repo-query] [--all]` | FullOps 저장소마다 열린 결정을 한 줄씩(`--all` 은 닫힌 것까지): `<repo>/<결정 ID>  <상태>  <과제 키>  "<질문>"  [선택지]  sha:<SHA>  until:<만료>  risks:<사유>  blocks:<기다리는 작업>  origin:<진입점>`. `--json` 은 `{"decisions":[...]}` (FullOps 기록에 `repo`, `repoId` 추가). 아래 [FullOps](#fullops) 참고 |
 | `decide <[repo/]D###> --answer <답> --by <답한 사람> [--sha <SHA>]` | FullOps 결정을 닫습니다. 출력 `answered <repo>/<ID>: <답>`, 이미 닫혔으면 `already <상태> <repo>/<ID>: <기존 답>`. 결정 ID는 저장소마다 매기므로 여러 저장소에 같은 ID가 있으면 `<repo>/D003` 으로 씁니다. `--json` 은 FullOps 결과에 `repo` 추가 |
 | `answer <Q########> (--answers <json> | --answer <label>) --by <답한 사람>` | Claude Code 질문 카드(`claude.question` 알림)에 답합니다. 아래 [질문 카드](#질문-카드) 참고. 출력 `answered <ID>: <답> | <답>` |
-| `bot <봇 이름> (--file <f> | --text <t>) [--item <n> | --chat <id|new>] [--type handoff|question|status] [--subject <제목>]` | 이 PC의 Orca 봇(`orca bot list`)에 메일을 보냅니다(`orca orchestration send --to bot:<이름>`). 기본 `handoff` 는 일을 맡기고, `--item <n>` 은 그 봇의 Needs you 항목(알림 `bot.needs_you`)에 답합니다. 자세한 내용은 [docs/orca-bots.md](docs/orca-bots.md) |
+| `bot <봇 이름> (--file <f> | --text <t> | --item <n> --answers <json>) [--item <n> | --chat <id|new>] [--type handoff|question|status] [--subject <제목>]` | 이 PC의 Orca 봇(`orca bot list`)에 메일을 보냅니다(`orca orchestration send --to bot:<이름>`). 기본 `handoff` 는 일을 맡기고, `--item <n>` 은 그 봇의 Needs you 항목(알림 `bot.needs_you`)에 답합니다. 선택지가 있는 항목은 `--answers '[2]'` 처럼 번호로 답하면 그 label을 보냅니다. 자세한 내용은 [docs/orca-bots.md](docs/orca-bots.md) |
 | `raw [--] <args>` | 같은 orca 바이너리에 그대로 전달하고 종료 코드도 그대로 돌려줍니다. `--` 는 없어도 됩니다 |
 | `help`, `--help`, `--version` | 도움말, 버전 |
 

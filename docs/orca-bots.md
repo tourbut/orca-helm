@@ -71,7 +71,7 @@ Orca 1.4.265의 Orca Bots를 orca-helm(Grok Bot 연동)에 붙일 수 있는지 
 ### 2.2 들어오는 쪽
 
 - **A. 채팅 상태(코드 변경 없음):** 기존 `agent.status.changed` 전달이 그대로 처리합니다. `worktree` 는 봇 이름, `repo`·`branch`·`tail`·`terminalId` 는 `null` 입니다(채팅은 터미널이 아님). 봇이 카드를 띄우면 `blocked`, 턴이 끝나면 `done (success)` 입니다. Grok Bot은 사람에게 "Orca에서 승인/답 필요"라고 전하기만 합니다.
-- **B. 봇 item Needs you(구현함):** 봇 채팅이 `working` 이 아닌 상태로 알려지면, 워커가 `bot.json` 으로 봇을 알아보고 `orca bot item list --bot <이름> --status needs-you` 를 읽습니다. 라우트마다 item 하나를 질문(`question.eventId`) 하나에 한 번씩 `bot.needs_you` 로 보냅니다. 라우트가 그 봇을 처음 볼 때(설치 직후, 봇을 새로 넣었을 때) 열려 있던 item은 본 것으로 기록만 하고 보내지 않습니다. 봇 채팅의 상태 알림은 그 라우트의 첫 item 알림에 `agentStatus` 로 실려 POST 하나로 갑니다. 같은 item에 새로 물으면 다시 보내고, 닫힌 item은 잊습니다. 보낸 기록은 FullOps 사건과 같은 저장소 키에 남아 워커가 다시 떠도 유지됩니다. 자유 텍스트의 비밀값은 다른 알림과 같은 규칙으로 가립니다.
+- **B. 봇 item Needs you(구현함):** 봇 채팅이 `working` 이 아닌 상태로 알려지면, 워커가 `bot.json` 으로 봇을 알아보고 `orca bot item list --bot <이름> --status needs-you` 를 읽습니다. 라우트마다 item 하나를 질문(`question.eventId`) 하나에 한 번씩 `bot.needs_you` 로 보냅니다. 라우트가 그 봇을 처음 볼 때(설치 직후, 봇을 새로 넣었을 때) 열려 있던 item은 가장 최근 것(질문 `eventId` 가 가장 큰 것) 하나만 보내고 나머지는 본 것으로 기록만 합니다. 채팅이 멈춘 그 순간이 봇이 막 물은 순간이기 때문입니다. 그 봇의 기록이 이미 있으면(0.6.0에서 올라옴) 건너뜁니다. 봇 채팅의 상태 알림은 그 라우트의 첫 item 알림에 `agentStatus` 로 실려 POST 하나로 갑니다. 같은 item에 새로 물으면 다시 보내고, 닫힌 item은 잊습니다. 보낸 기록은 FullOps 사건과 같은 저장소 키에 남아 워커가 다시 떠도 유지됩니다. 자유 텍스트의 비밀값은 다른 알림과 같은 규칙으로 가립니다.
 - **C. orca-helm-ask:** 봇 채팅에는 걸리지 않습니다(3절). 봇 채팅의 질문 카드는 A의 `blocked` 알림으로만 알 수 있습니다.
 
 `bot.needs_you` 예(실측에서 받은 모양, `text` 는 고친 뒤 형식):
@@ -90,7 +90,7 @@ Orca 1.4.265의 Orca Bots를 orca-helm(Grok Bot 연동)에 붙일 수 있는지 
     "answerable": true
   },
   "chat": "<chat id>",
-  "reply": "orca-helm bot 'helm-probe' --item 2 --text <answer>",
+  "reply": "orca-helm bot 'helm-probe' --item 2 --answers '[<option number>]'",
   "repo": null, "worktree": "helm-probe", "branch": null, "route": "probe", "host": "<PC 이름>"
 }
 ```
@@ -101,15 +101,20 @@ Orca 1.4.265의 Orca Bots를 orca-helm(Grok Bot 연동)에 붙일 수 있는지 
 
 Grok Bot 루틴은 `fullops.decision`, `claude.question` 과 같은 방식으로 `bot.needs_you` 를 다룹니다. `text` 한 줄을 사람에게 보여 주고, `question.ask.questions[].options[].label` 을 선택지로 씁니다. 사람이 고르면 `reply` 를 실행합니다.
 
+- 선택지가 있으면 `reply` 는 번호를 받습니다(1부터, 질문 순서대로, `multi` 질문은 배열). label은 봇(모델)이 쓴 글이라 셸 명령에 넣지 않습니다. orca-helm이 item을 다시 읽어 번호를 label로 바꿔 `<질문>: <label>` 줄로 보냅니다.
+- 선택지가 없으면 `--text <answer>` 로 사람이 쓴 답을 넘깁니다.
+- 봇 이름은 작은따옴표로 감쌉니다. 안의 `'` 와 PowerShell이 작은따옴표로 읽는 `‘ ’ ‚ ‛` 는 두 번 씁니다.
+
 ```powershell
-.\orca-helm.ps1 bot 쿠어 --item 3 --text "main으로 머지해 주세요 (성철 답)"
+.\orca-helm.ps1 bot '쿠어' --item 3 --answers '[1]'
+.\orca-helm.ps1 bot '쿠어' --item 3 --text "main으로 머지해 주세요 (성철 답)"
 ```
 
 이 답은 그 item을 가진 채팅에 `handoff` 메일로 갑니다. 봇은 메일을 읽고 이어서 일합니다. Orca 카드에는 "기록된 답"으로 남지 않으므로, 봇이 item 상태를 직접 옮겨야 카드가 닫힙니다.
 
 ### 2.4 나가는 쪽
 
-`orca-helm bot <봇 이름> (--file <f> | --text <t>) [--item <n> | --chat <id|new>] [--type handoff|question|status] [--subject <제목>]`
+`orca-helm bot <봇 이름> (--file <f> | --text <t> | --item <n> --answers <json>) [--item <n> | --chat <id|new>] [--type handoff|question|status] [--subject <제목>]`
 
 - 기본 `handoff` 는 Home Chat에 일을 맡깁니다. `--chat new` 는 새 채팅, `--chat <id>` 는 `orca bot chats` 의 그 채팅입니다.
 - 제목은 `--subject`, 없으면 본문 첫 줄(80자)이고, `--item` 이면 `Answer on item #<n>` 입니다.

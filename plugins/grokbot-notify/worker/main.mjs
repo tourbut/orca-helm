@@ -704,7 +704,7 @@ export default async function activate(orca) {
    * An Orca bot's items under Needs you, read when its chat settles: a bot asks by setting an item to needs-you and
    * ending its turn. A route takes a bot by its name among the route's workspaces (a bot's chat is a folder workspace
    * named after it). Asked again on the same item (a new question event), it goes again. The first look for a route
-   * (just installed, or the bot just named) records what is open as seen, so old items do not all go at once. The
+   * (just installed, or the bot just named) records all but the newest open item as seen, so old ones do not all go. The
    * chat's terminal alert rides along in a route's first item, like FullOps alerts.
    */
   async function forwardBotItems(event, terminal, carried) {
@@ -720,14 +720,20 @@ export default async function activate(orca) {
       const alerts = (items ?? []).map((item) => ({
         id: `${item.uid}@${item.question?.eventId ?? item.lastEventId}`,
         payload: (where) => botItemPayload(item, bot.name, where),
+        // Event ids count up per bot (`e15`): the highest is the question asked last.
+        age: [Number(String(item.question?.eventId ?? item.lastEventId).replace(/\D/g, '')) || 0, item.number ?? 0],
       }))
       const scope = `bot:${bot.id}`
       const seen = `${scope}#*`
+      // The chat just settled, so the newest item is likely the one it just asked: that one still goes.
+      const newest = alerts.reduce((best, alert) => (!best || alert.age[0] > best.age[0] || (alert.age[0] === best.age[0] && alert.age[1] > best.age[1]) ? alert : best), null)
       let primed = false
       for (const route of routes) {
         const sent = announced.get(route.key) ?? announced.set(route.key, new Set()).get(route.key)
-        if (sent.has(seen)) continue
-        for (const key of [seen, ...alerts.map((alert) => `${scope}#${alert.id}`)]) sent.add(key)
+        // Any record of this bot (an earlier look, or 0.6.0 before the marker) means it was seen.
+        if ([...sent].some((key) => key.startsWith(`${scope}#`))) continue
+        for (const alert of alerts) if (alert !== newest) sent.add(`${scope}#${alert.id}`)
+        sent.add(seen)
         primed = true
       }
       if (primed) await saveAnnounced()

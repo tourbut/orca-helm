@@ -311,3 +311,22 @@ test('bot: each value one --x= token straight to orca, an item answer, and --ite
     assert.match(refused.stderr, why)
   }
 })
+
+test('bot --answers: the item\'s option by number, sent as its label; a wrong number or a missing item refused', async () => {
+  const items = [{ number: 3, question: { ask: { questions: [{ prompt: '어디로?', options: [{ label: 'main' }, { label: "dev'; whoami" }] }, { prompt: '검사?', multi: true, options: [{ label: 'lint' }, { label: 'test' }] }] } } }]
+  const script = { 'orchestration send': { result: {} }, 'bot item': { body: { ok: true, result: { items } } } }
+  const run = (...argv) => runWithFakeOrca(script, ['bot', '쿠어', ...argv, '--json'], { orchestration: FAKE, bot: FAKE })
+  const sent = await run('--item', '3', '--answers', '[2,[1,2]]')
+  assert.equal(sent.code, 0, sent.stderr)
+  assert.ok(JSON.parse(sent.stdout).argv.includes("--body=어디로?: dev'; whoami\n검사?: lint, test"))
+  for (const [argv, why] of [
+    [['--item', '3', '--answers', '[3,[1]]'], /has options 1 to 2, not 3/],
+    [['--item', '9', '--answers', '[1,[1]]'], /item #9 of bot:쿠어 is not waiting/],
+    [['--answers', '[1]'], /needs --item/],
+    [['--item', '3', '--answers', '[1]', '--text', 'x'], /either --answers or --text/],
+  ]) {
+    const refused = await run(...argv)
+    assert.equal(refused.code, 1)
+    assert.match(refused.stderr, why)
+  }
+})
