@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
+import { askDir, askFile, isAskId, isOpen, loadJson, saveJson } from '../../../lib/ask.mjs'
 import { runOrca } from '../../../lib/orca.mjs'
 import {
   DECISION_VERSION,
@@ -18,6 +19,7 @@ import {
   messagePayload,
   parseRoutes,
   parseStates,
+  questionPayload,
   removeRouteLines,
   repoNameFromGit,
   routeLine,
@@ -608,10 +610,76 @@ export default async function activate(orca) {
     return carried
   }
 
+  /** Question IDs being sent now, so a status event and the folder watch do not both send one. */
+  const asking = new Set()
+  const dir = askDir()
+
+  /**
+   * Each question card bin/ask-hook.mjs holds (lib/ask.mjs) goes once to every route whose workspaces match. The
+   * <id>.sent.json it leaves tells the hook whether to wait (a bot got it) or show the card now (none did).
+   */
+  async function forwardQuestions() {
+    let names
+    try {
+      names = fs.readdirSync(dir)
+    } catch {
+      return []
+    }
+    const results = []
+    for (const name of names) {
+      const [id, kind] = name.split('.')
+      if (!isAskId(id) || !name.endsWith('.json')) continue
+      // A hook Claude Code stopped leaves its files: clear what no hook waits for.
+      const question = loadJson(askFile(dir, id))
+      if (!isOpen(question)) {
+        try {
+          if (kind !== 'json' || question) fs.rmSync(path.join(dir, name), { force: true })
+        } catch {
+          // Busy (Windows): the next look clears it.
+        }
+        continue
+      }
+      if (kind !== 'json' || asking.has(id) || fs.existsSync(askFile(dir, id, 'sent'))) continue
+      asking.add(id)
+      try {
+        const where = await workspaceInfo(orca, question.workspaceId)
+        const routes = readRoutes(await readSettings(orca)).filter((route) => matchesWorkspace(route.workspaces, where))
+        const sent = []
+        for (const route of routes) {
+          const payload = questionPayload(question, { ...where, worktree: where.name, route: route.name, host: os.hostname() })
+          const status = await deliver(orca, route, payload, await authFor(orca, route))
+          if (status >= 200 && status < 300) sent.push(route.name)
+          results.push({ route: route.name, question: id, status })
+        }
+        saveJson(askFile(dir, id, 'sent'), { routes: sent, at: new Date().toISOString() })
+      } catch (err) {
+        orca.log(`question forward failed: ${errText(err)}`)
+      } finally {
+        asking.delete(id)
+      }
+    }
+    return results
+  }
+
+  // Orca wakes this worker on agent events, so every event looks at the folder; the watch catches a card written
+  // just after. unref: the watch never keeps the worker alive on its own.
+  try {
+    const watcher = fs.watch(dir, () => {
+      // On Windows a removed folder fires rename forever; status events still look, and a restart watches again.
+      if (!fs.existsSync(dir)) return watcher.close()
+      void forwardQuestions()
+    })
+    watcher.on('error', () => watcher.close())
+    watcher.unref()
+  } catch {
+    // No question has been asked on this PC yet; status events still look.
+  }
+
   orca.events.on('agent.status.changed', async (event) => {
     const terminal = await terminalAlert(event)
     const result = await sendTerminal(terminal, await forwardFullOps(event, terminal))
     await persist()
+    await forwardQuestions()
     return result
   })
 

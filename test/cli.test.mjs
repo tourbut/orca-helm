@@ -150,6 +150,11 @@ test('send: exit 3 when ambiguous, one --text= token, a cleaned --file, no non-U
   const refused = await runWithFakeOrca({ ...one('working'), ...refuse }, ['send', 'app', '--text', 'hi'])
   assert.equal(refused.code, 1)
   assert.match(refused.stderr, /input refused by t:h1: busy/)
+
+  const prompt = { 'terminal send': { body: { ok: false, error: { code: 'agent_prompt_blocked', message: 'agent_prompt_blocked' } }, code: 1 } }
+  const blocked = await runWithFakeOrca({ ...one('working'), ...prompt }, ['send', 'app', '--text', 'hi'])
+  assert.equal(blocked.code, 5)
+  assert.match(blocked.stderr, /t:h1 is showing a question or permission prompt/)
 })
 
 test('start needs --agent, passes one --prompt= token, and prints the handle of a terminal agent', async () => {
