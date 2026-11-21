@@ -139,6 +139,7 @@ Grok Bot은 PC 셸에서 orca-helm을 호출합니다. Windows는 `C:\tools\orca
 | `decisions [repo-query] [--all]` | FullOps 저장소마다 열린 결정을 한 줄씩(`--all` 은 닫힌 것까지): `<repo>/<결정 ID>  <상태>  <과제 키>  "<질문>"  [선택지]  sha:<SHA>  until:<만료>  risks:<사유>  blocks:<기다리는 작업>  origin:<진입점>`. `--json` 은 `{"decisions":[...]}` (FullOps 기록에 `repo`, `repoId` 추가). 아래 [FullOps](#fullops) 참고 |
 | `decide <[repo/]D###> --answer <답> --by <답한 사람> [--sha <SHA>]` | FullOps 결정을 닫습니다. 출력 `answered <repo>/<ID>: <답>`, 이미 닫혔으면 `already <상태> <repo>/<ID>: <기존 답>`. 결정 ID는 저장소마다 매기므로 여러 저장소에 같은 ID가 있으면 `<repo>/D003` 으로 씁니다. `--json` 은 FullOps 결과에 `repo` 추가 |
 | `answer <Q########> (--answer <label> | --answers <json>) --by <답한 사람>` | Claude Code 질문 카드(`claude.question` 알림)에 답합니다. 아래 [질문 카드](#질문-카드) 참고. 출력 `answered <ID>: <답> | <답>` |
+| `bot <봇 이름> (--file <f> | --text <t>) [--item <n> | --chat <id|new>] [--type handoff|question|status] [--subject <제목>]` | 이 PC의 Orca 봇(`orca bot list`)에 메일을 보냅니다(`orca orchestration send --to bot:<이름>`). 기본 `handoff` 는 일을 맡기고, `--item <n>` 은 그 봇의 Needs you 항목(알림 `bot.needs_you`)에 답합니다. 자세한 내용은 [docs/orca-bots.md](docs/orca-bots.md) |
 | `raw [--] <args>` | 같은 orca 바이너리에 그대로 전달하고 종료 코드도 그대로 돌려줍니다. `--` 는 없어도 됩니다 |
 | `help`, `--help`, `--version` | 도움말, 버전 |
 
@@ -268,6 +269,7 @@ Orca가 플러그인에 주는 알림 훅 `agent.status.changed` 를 받아 Grok
   - orchestration 메시지는 에이전트가 멈췄다고 알릴 때(`working` 이 아닐 때)만 `orca orchestration inbox` 로 읽습니다. 메시지를 소비하지 않으므로 coordinator가 받을 메시지에 영향이 없습니다. 저장소는 `worker-show` 의 workspace로 정합니다. dispatch가 없는 메시지는 저장소를 알 수 없어 보내지 않습니다.
   - 같은 사건은 봇마다 한 번만 보냅니다. 보낸 기록은 플러그인 저장소(`storage:own`)에 남아 워커가 다시 떠도 유지됩니다. 보내지 못하면 다음 알림 때 다시 보내고, 닫힌 사건은 잊습니다. 24시간이 지난 판정·보류·메시지는 새 봇이나 새 설치에도 보내지 않습니다. 형식 버전이 1이 아닌 결정·판정은 보내지 않고 로그에 남깁니다.
   - 질문·사유·본문 같은 자유 텍스트의 비밀값은 `tail` 과 같은 규칙으로 가립니다. `sha` 필드는 답할 때 필요하므로 그대로 둡니다.
+- **Orca 봇 Needs you:** 봇 채팅(봇 이름의 폴더 워크스페이스)이 멈추면 `orca bot item list --bot <이름> --status needs-you` 로 그 봇의 Needs you 항목을 읽어, 워크스페이스 칸에 그 봇 이름이 있는 봇마다 `bot.needs_you` 로 한 번씩 보냅니다. 같은 항목에 새로 물으면 다시 보냅니다. 답은 `reply` 의 `orca-helm bot` 명령입니다. [docs/orca-bots.md](docs/orca-bots.md) 참고.
 - **터미널 꼬리:** Orca 알림 훅은 마지막 응답을 주지 않으므로, 보낼 상태가 오면 워커가 `terminal.read` 로 터미널을 읽어 `tail` 에 싣습니다. `read --plain` 과 같은 규칙으로 입력창·푸터·사이드 패널을 걷어 내므로, 그 안의 카운터가 바뀌거나 창 크기가 바뀌어 줄이 다시 감겨도 새 출력으로 치지 않습니다. `working` 은 출력이 계속 바뀌므로 읽지 않고 상태만 비교합니다. 읽지 못하면(터미널 닫힘, 권한 미승인 등) 로그에 이유만 남기고 `tail` 없이 알림을 보냅니다. 더 앞의 내용은 `orca-helm read <repo>/<worktree> --plain` 으로 읽습니다.
 
 ### 보내는 JSON

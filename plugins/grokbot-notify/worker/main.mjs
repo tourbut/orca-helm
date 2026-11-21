@@ -7,6 +7,7 @@ import { askDir, askFile, isAskId, isOpen, loadJson, saveJson } from '../../../l
 import { runOrca } from '../../../lib/orca.mjs'
 import {
   DECISION_VERSION,
+  botItemPayload,
   buildPayload,
   createDebouncer,
   decisionPayload,
@@ -188,6 +189,16 @@ function repoOf(worktreePath) {
 const gitFileOf = (worktreePath) => {
   const dotGit = path.join(worktreePath, '.git')
   return fs.statSync(dotGit).isDirectory() ? null : fs.readFileSync(dotGit, 'utf8')
+}
+
+/** The Orca bot whose folder this is (`~/.orca/bots/<folder>/bot.json`), or null. */
+function botOf(folderPath) {
+  try {
+    const bot = JSON.parse(fs.readFileSync(path.join(folderPath, 'bot.json'), 'utf8'))
+    return bot?.id && bot?.name ? bot : null
+  } catch {
+    return null
+  }
 }
 
 const isFullOps = (worktreePath) => Boolean(worktreePath) && fs.existsSync(path.join(worktreePath, '.fullops-squad', 'fullops.json'))
@@ -573,37 +584,9 @@ export default async function activate(orca) {
         alerts.push(...read.alerts)
         messagesRead = read.complete
       }
-      const live = new Set(alerts.map((alert) => `${common}#${alert.id}`))
-      let changed = false
-      for (const route of routes) {
-        const riding = terminal?.due.find((due) => due.route.key === route.key)
-        const sent = announced.get(route.key) ?? announced.set(route.key, new Set()).get(route.key)
-        for (const key of sent) {
-          // Closed or aged out since. Messages not read this time are not known to be gone.
-          if (key.startsWith(`${common}#`) && !live.has(key) && (messagesRead || !key.startsWith(`${common}#msg:`))) {
-            sent.delete(key)
-            changed = true
-          }
-        }
-        for (const alert of alerts) {
-          const key = `${common}#${alert.id}`
-          if (sent.has(key)) continue
-          sent.add(key)
-          const payload = {
-            ...alert.payload({ repo: info.repo, worktree: info.name, branch: info.branch, route: route.name, host: os.hostname() }),
-            eventId: idOf(key),
-          }
-          const carry = riding && !carried.has(route.key)
-          if (carry) payload.agentStatus = riding.payload()
-          const status = await deliver(orca, route, payload, await authFor(orca, route), (name) => count(route, `fullops.${name}`))
-          if (ok(status)) {
-            changed = true
-            count(route, 'fullops.sent')
-            if (carry) carried.add(route.key)
-          } else sent.delete(key)
-        }
-      }
-      if (changed) await saveAnnounced()
+      const ride = (route) => terminal?.due.find((due) => due.route.key === route.key)
+      // Messages not read this time are not known to be gone.
+      await announceOnce(routes, common, alerts, info, { forgets: (key) => messagesRead || !key.startsWith(`${common}#msg:`), ride, carried })
     } catch (err) {
       orca.log(`FullOps alert forward failed: ${errText(err)}`)
     }
@@ -675,11 +658,78 @@ export default async function activate(orca) {
     // No question has been asked on this PC yet; status events still look.
   }
 
+  /**
+   * Each alert (`{ id, payload(where) }`) goes once to every route, remembered as `<scope>#<id>`; a remembered one no
+   * longer among `alerts` (closed or aged out) is forgotten when `forgets(key)`. A failed delivery is tried again.
+   * `ride(route)` is a terminal alert that rides along in the route's first alert; its route key goes in `carried`.
+   */
+  async function announceOnce(routes, scope, alerts, info, { forgets = () => true, ride = () => null, carried = new Set(), counter = 'fullops' } = {}) {
+    const live = new Set(alerts.map((alert) => `${scope}#${alert.id}`))
+    let changed = false
+    for (const route of routes) {
+      const riding = ride(route)
+      const sent = announced.get(route.key) ?? announced.set(route.key, new Set()).get(route.key)
+      for (const key of sent) {
+        if (key.startsWith(`${scope}#`) && !live.has(key) && forgets(key)) {
+          sent.delete(key)
+          changed = true
+        }
+      }
+      for (const alert of alerts) {
+        const key = `${scope}#${alert.id}`
+        if (sent.has(key)) continue
+        sent.add(key)
+        const payload = {
+          ...alert.payload({ repo: info.repo, worktree: info.name, branch: info.branch, route: route.name, host: os.hostname() }),
+          eventId: idOf(key),
+        }
+        const carry = riding && !carried.has(route.key)
+        if (carry) payload.agentStatus = riding.payload()
+        const status = await deliver(orca, route, payload, await authFor(orca, route), (name) => count(route, `${counter}.${name}`))
+        if (ok(status)) {
+          changed = true
+          count(route, `${counter}.sent`)
+          if (carry) carried.add(route.key)
+        } else sent.delete(key)
+      }
+    }
+    if (changed) await saveAnnounced()
+    return carried
+  }
+
+  /**
+   * An Orca bot's items under Needs you, read when its chat settles: a bot asks by setting an item to needs-you and
+   * ending its turn. A route takes a bot by its name among the route's workspaces (a bot's chat is a folder workspace
+   * named after it). Asked again on the same item (a new question event), it goes again.
+   */
+  async function forwardBotItems(event) {
+    if (event.state === 'working' || !String(event.workspaceId ?? '').startsWith('folder:')) return []
+    try {
+      const info = await workspaceInfo(orca, event.workspaceId)
+      const bot = info.path && botOf(info.path)
+      if (!bot) return []
+      const routes = readRoutes(await readSettings(orca)).filter((route) => matchesWorkspace(route.workspaces, info))
+      if (routes.length === 0) return []
+      // shortcut: one page (100) of needs-you items; page with --cursor if a bot ever keeps more open.
+      const { items } = await runOrca(['bot', 'item', 'list', '--bot', bot.name, '--status', 'needs-you', '--limit', '100'], { timeout: ORCA_MS })
+      const alerts = (items ?? []).map((item) => ({
+        id: `${item.uid}@${item.question?.eventId ?? item.lastEventId}`,
+        payload: (where) => botItemPayload(item, bot.name, where),
+      }))
+      await announceOnce(routes, `bot:${bot.id}`, alerts, info, { counter: 'bot' })
+      return alerts
+    } catch (err) {
+      orca.log(`bot item forward failed: ${errText(err)}`)
+      return []
+    }
+  }
+
   orca.events.on('agent.status.changed', async (event) => {
     const terminal = await terminalAlert(event)
     const result = await sendTerminal(terminal, await forwardFullOps(event, terminal))
     await persist()
     await forwardQuestions()
+    await forwardBotItems(event)
     return result
   })
 

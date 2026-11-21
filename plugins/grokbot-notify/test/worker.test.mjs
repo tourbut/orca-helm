@@ -676,3 +676,56 @@ test('a question card the ask hook holds goes once to the routes of its workspac
     fs.rmSync(ASK_DIR, { recursive: true, force: true })
   }
 })
+
+test("an Orca bot's Needs you item goes once to the route that names the bot, and again when it asks anew", async (t) => {
+  const stub = await startStub([])
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'grokbot-notify-bot-'))
+  const folder = path.join(root, 'bots', 'bot')
+  fs.mkdirSync(folder, { recursive: true })
+  fs.writeFileSync(path.join(folder, 'bot.json'), JSON.stringify({ id: 'b1', name: '쿠어' }))
+  // A stand-in for `orca bot item list`: node runs ./bot, which answers from items.json.
+  const fake = path.join(root, 'fake')
+  fs.mkdirSync(fake)
+  fs.writeFileSync(path.join(fake, 'package.json'), '{"type":"commonjs"}')
+  fs.writeFileSync(path.join(fake, 'bot'), `process.stdout.write(JSON.stringify({ ok: true, result: { items: JSON.parse(require('fs').readFileSync('items.json', 'utf8')) } }))`)
+  const items = (value) => fs.writeFileSync(path.join(fake, 'items.json'), JSON.stringify(value))
+  const cwd = process.cwd()
+  const bin = process.env.ORCA_HELM_BIN
+  process.chdir(fake)
+  process.env.ORCA_HELM_BIN = process.execPath
+  t.after(() => {
+    process.chdir(cwd)
+    if (bin === undefined) delete process.env.ORCA_HELM_BIN
+    else process.env.ORCA_HELM_BIN = bin
+    stub.close()
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  const ask = { prompt: '어느 쪽으로 머지할까요?', options: [{ label: 'main' }, { label: 'dev', detail: 'Authorization: Bearer s3cret-token' }] }
+  // Orca's `text` lists the choices under the question; `ask.context` is the words alone.
+  const question = (eventId) => ({ eventId, text: '확인 부탁\n\n어느 쪽으로 머지할까요?\n- main\n- dev', ask: { context: '확인 부탁', questions: [ask] } })
+  const item = (eventId) => ({ uid: 'u1', number: 3, title: 'PR #9 머지', status: 'needs_you', chat: { id: 'c1' }, question: question(eventId) })
+  items([item('e5')])
+  const workspaceId = 'folder:f1'
+  const { orca, settings, emit } = mockOrca([{ id: workspaceId, kind: 'folder', name: '쿠어', branch: null, path: folder }])
+  settings.routes = `풀로 | 쿠어 | ${stub.url} | Bearer a1\n노리 | jevpet | ${stub.url} | Bearer b2`
+  settings.states = 'blocked' // no state alerts in this test
+  await activate(orca)
+  const settled = { workspaceId, paneKey: 'structured-agent-session-c1:x', title: '쿠어', state: 'done', receivedAt: 1 }
+
+  await emit(settled)
+  await emit(settled)
+  assert.equal(stub.received.length, 1)
+  const body = stub.received[0].body
+  assert.equal(body.event, 'bot.needs_you')
+  assert.equal(body.route, '풀로')
+  assert.equal(body.text, '쿠어 #3: needs you - PR #9 머지: 확인 부탁 (어느 쪽으로 머지할까요? [main / dev])')
+  assert.equal(body.reply, 'orca-helm bot "쿠어" --item 3 --text <answer>')
+  assert.doesNotMatch(JSON.stringify(body), /s3cret-token/)
+
+  items([item('e7')]) // asked again on the same item
+  await emit({ ...settled, state: 'working' }) // a working chat is not read
+  assert.equal(stub.received.length, 1)
+  await emit(settled)
+  assert.equal(stub.received.length, 2)
+})
