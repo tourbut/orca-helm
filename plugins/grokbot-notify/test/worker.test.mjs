@@ -921,7 +921,7 @@ test('what waits for a person goes to the Orca bot by local mail, once; Grok Bot
 test('Orca bot mail: a stopped terminal is retried at any event, chats and done ask by their words, a first look sums up', async (t) => {
   const git = gitFixture()
   t.after(() => git.cleanup())
-  const { script, mails, botCalls } = fakeBotOrca(t, { terminals: [liveTerminal(git.worktree)] })
+  const { script, mails, botCalls } = fakeBotOrca(t, { terminals: [liveTerminal(git.worktree), liveTerminal(git.worktree, 't5')] })
   fs.mkdirSync(path.join(git.worktree, '.fullops-squad'))
   fs.writeFileSync(path.join(git.worktree, '.fullops-squad', 'fullops.json'), '{}')
   const records = path.join(git.root, 'shop', '.git', 'fullops-decisions')
@@ -993,7 +993,7 @@ test('Orca bot mail: a stopped terminal is retried at any event, chats and done 
 test('Orca bot mail: an answered chat question stays quiet, one refusing bot holds back no other, a bot taken out gets nothing', async (t) => {
   const git = gitFixture()
   t.after(() => git.cleanup())
-  const { script, mails } = fakeBotOrca(t, { terminals: [liveTerminal(git.worktree)] })
+  const { script, mails } = fakeBotOrca(t, { terminals: [liveTerminal(git.worktree), liveTerminal(git.worktree, 't5')] })
   const terminals = { t1: screen(['● 작업 중']), t5: screen(['● 권한이 필요합니다']) }
   const mock = mockOrca([{ id: 'wt1', kind: 'worktree', name: 'main', branch: 'main', path: git.worktree }], terminals)
   Object.assign(mock.settings, { grokProjectAlerts: false, orcaBots: '노리\n쿠어' })
@@ -1035,7 +1035,7 @@ test('Orca bot mail: an answered chat question stays quiet, one refusing bot hol
 test('Orca bot mail: a waiting mail outlives a restart whose `orca bot list` fails, and goes once the list reads again', async (t) => {
   const git = gitFixture()
   t.after(() => git.cleanup())
-  const { script, mails } = fakeBotOrca(t, { terminals: [liveTerminal(git.worktree)] })
+  const { script, mails } = fakeBotOrca(t, { terminals: [liveTerminal(git.worktree), liveTerminal(git.worktree, 't5')] })
   const terminals = { t1: screen(['● 작업 중']), t5: screen(['● 권한이 필요합니다']) }
   const store = {}
   const start = async () => {
@@ -1080,4 +1080,29 @@ test('Orca bot mail from a chat borrows a live terminal of its worktree and name
   assert.equal(rest.length, 0)
   assert.deepEqual([mail.from, mail.type], ['term_wt', 'status'])
   assert.match(mail.body, /^source: chat c3 \(mailed through terminal term_wt only to reach you; that terminal did not ask, do not answer it\)\nshop\/main: blocked - chat\n/)
+})
+
+
+test('Orca bot mail: a worktree Orca does not list is named by its folder; a closed terminal drops its waiting mail', async (t) => {
+  const git = gitFixture()
+  t.after(() => git.cleanup())
+  const { script, mails } = fakeBotOrca(t, { terminals: [liveTerminal(git.worktree, 't5')] })
+  const mock = mockOrca([], { t5: screen(['● 권한이 필요합니다']) })
+  Object.assign(mock.settings, { grokProjectAlerts: false, orcaBots: '' })
+  await activate(mock.orca)
+  const event = (terminalId, state) => ({ workspaceId: `r1::${git.worktree}`, paneKey: `p:${terminalId}`, terminalId, title: 'x', state, receivedAt: 1 })
+
+  await mock.emit(event('t5', 'blocked'))
+  assert.match(mails()[0].body, /\nproject: shop \| worktree: main\n/)
+
+  // Refused, then the terminal is closed: the mail is dropped at the next event, with a log line, and never sent.
+  script({ mailDown: true })
+  await mock.emit(event('t5', 'working'))
+  await mock.emit(event('t5', 'blocked'))
+  script({ terminals: [] })
+  await mock.emit(event('t1', 'working'))
+  assert.ok(mock.logs.includes('Orca bot 쿠어 mail dropped: its terminal is closed'))
+  await mock.emit(event('t1', 'working'))
+  assert.equal(mails().length, 0)
+  assert.equal(mock.logs.filter((line) => line.includes('mail failed')).length, 1, 'tried once, while it was open')
 })

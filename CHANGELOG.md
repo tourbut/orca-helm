@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.3
+
+- Claude Code's own prompts ("Teach auto mode about your environment?", "How is Claude doing this session?") are no longer taken for a question to the person (a false mail seen on 0.7.2 after a card was cancelled).
+- A worktree Orca does not list by the event's id is named by its folder, so the mail says `worktree: <folder>` instead of `worktree: -`.
+- A waiting terminal mail whose terminal Orca no longer lists (closed) is dropped with a log line instead of failing at every event for a day.
+
 ## 0.7.2
 
 - Orca bot mail now actually goes out. Orca takes `orca orchestration send` only from a sender it can name, and a plugin worker is none, so 0.7.0 and 0.7.1 were refused (`Could not determine the calling terminal`, measured 2026-11-26). A terminal's alert is now sent `--from` that terminal. A chat cannot be named as a sender (`session_caller_chat_not_declarable`), so a chat's alert and FullOps events borrow a live terminal: the repo's FullOps coordinator, else one in the same worktree. The body's first line then names the real source and says the terminal did not ask. With no live terminal the mail waits and is tried again.

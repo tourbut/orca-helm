@@ -355,3 +355,10 @@ test('a card is its own footer line under numbered choices: words that only name
   assert.equal(tailNeedsInput(screenText(['● 끝났습니다.', 'Enter to select · ↑/↓ to navigate · Esc to cancel'])), false, 'no choice above it')
   assert.equal(tailNeedsInput(screenText([' ☐ 시험', '고르세요.', '❯ 1. A', '  2. B', '  Esc to cancel'])), true)
 })
+
+
+test("Claude Code's own prompts are no question for a person; a real one still is", () => {
+  assert.equal(tailNeedsInput(screenText(['● 카드를 취소했습니다.', '  Teach auto mode about your environment? (y/n)'])), false)
+  assert.equal(tailNeedsInput(screenText(['● 끝났습니다.', '● How is Claude doing this session? (optional)', '  1: Bad    2: Fine   3: Good   0: Dismiss'])), false)
+  assert.equal(tailNeedsInput(screenText(['● 배포할까요?', '  Teach auto mode about your environment?'])), true)
+})
