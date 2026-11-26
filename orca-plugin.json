@@ -3,7 +3,7 @@
   "execution": "trusted-worker",
   "id": "grokbot-notify",
   "name": "Grok Bot Notify",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "Hands what needs a person in Orca projects (terminals and chats blocked or asking, FullOps decisions, ask judgments, holds, failures, escalations) to an Orca bot as local mail, and Orca bots' Needs you items to Grok Bot. The alert half of orca-helm.",
   "license": "MIT",
   "repository": "https://github.com/tourbut/orca-helm",

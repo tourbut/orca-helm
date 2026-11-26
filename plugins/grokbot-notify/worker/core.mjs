@@ -505,7 +505,9 @@ const MARKER = /^\s*[●⏺❯›>]\s*/
 const OPTION = /^\s*(?:[❯›>]\s*)?\d{1,2}[.)]\s+(\S.*)$/
 const HEAD_CHARS = 2500
 
-const askLines = (tail) => String(tail ?? '').split('\n').filter((line) => line.trim()).slice(-ASK_LINES)
+// Claude Code's own prompts that ask the person nothing about the work (seen after a card was cancelled, 2026-11-26).
+const CLAUDE_HINTS = /Teach auto mode about your environment\?|How is Claude doing this session\?/
+const askLines = (tail) => String(tail ?? '').split('\n').filter((line) => line.trim() && !CLAUDE_HINTS.test(line)).slice(-ASK_LINES)
 const clip = (str, chars) => (str.length > chars ? `${str.slice(0, chars - 1)}…` : str)
 
 /** A hint only, by fixed rules: one of the tail's last lines asks something. False means no rule matched. */

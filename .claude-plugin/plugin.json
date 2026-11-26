@@ -1,6 +1,6 @@
 {
   "name": "orca-helm-ask",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "Hands a Claude Code question card (AskUserQuestion) in an Orca terminal to Grok Bot through the grokbot-notify plugin, and takes the person's answer back from `orca-helm answer`.",
   "author": { "name": "tourbut" },
   "repository": "https://github.com/tourbut/orca-helm",

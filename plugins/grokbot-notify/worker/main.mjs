@@ -329,7 +329,8 @@ async function listWorkspaceOptions(orca) {
 async function workspaceInfo(orca, workspaceId) {
   const ws = workspaceId ? (await listWorkspaces(orca)).find((w) => w.id === workspaceId) : null
   const worktreePath = ws?.path || String(workspaceId ?? '').split('::')[1] || null
-  return { name: ws?.name ?? null, branch: ws?.branch ?? null, path: worktreePath, repo: repoOf(worktreePath) }
+  // A worktree Orca does not list by this id still has a name: its folder's.
+  return { name: ws?.name ?? (worktreePath ? path.basename(worktreePath) : null), branch: ws?.branch ?? null, path: worktreePath, repo: repoOf(worktreePath) }
 }
 
 /** The terminal's masked text, or null when it cannot be read: the alert goes without it. Output is never logged. */
@@ -438,6 +439,16 @@ async function borrowedSender(info) {
   const fold = (p) => (process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p))
   const coordinator = info.repo ? live.find((t) => isFullOps(t.worktreePath) && !isFullOpsWorker(t.worktreePath, t.branch) && repoOf(t.worktreePath) === info.repo) : null
   return (coordinator ?? (info.path ? live.find((t) => fold(t.worktreePath) === fold(info.path)) : null))?.handle ?? null
+}
+
+/** Every terminal handle Orca lists, closed ones gone; null when the list cannot be read (nothing is then dropped). */
+async function liveHandles() {
+  try {
+    const { terminals } = await runOrca(['terminal', 'list'], { timeout: ORCA_MS })
+    return new Set((terminals ?? []).map((t) => t?.handle).filter(Boolean))
+  } catch {
+    return null
+  }
 }
 
 const remindMsOf = (settings) => {
@@ -907,6 +918,8 @@ export default async function activate(orca) {
       const settings = await readSettings(orca)
       // A bot that still refuses is not asked again this time; the others' mails still go.
       const refused = new Set()
+      // A terminal Orca no longer lists (closed) can never send its own mail again: it is dropped, not tried for a day.
+      const listed = [...pending.values()].some((entry) => entry.from) ? await liveHandles() : null
       for (const [key, entry] of pending) {
         if (entry.terminal === terminal || Date.now() - entry.at >= RECORD_MS) {
           pending.delete(key)
@@ -918,6 +931,11 @@ export default async function activate(orca) {
         const bots = await botTargets(settings, entry.where ?? {})
         if (!bots) break
         if (!bots.some((bot) => bot.key === entry.botKey)) {
+          pending.delete(key)
+          continue
+        }
+        if (entry.from && listed && !listed.has(entry.from)) {
+          orca.log(`Orca bot ${entry.bot} mail dropped: its terminal is closed`)
           pending.delete(key)
           continue
         }
