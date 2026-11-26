@@ -43,7 +43,7 @@
 | 사건 | 언제 | 메일 |
 | --- | --- | --- |
 | 터미널·채팅 `blocked` | 권한 요청, 질문 카드 | 보냄 |
-| 터미널·채팅 `waiting`·`done` | 마지막 말 8줄에 질문(`?`, `~까요`, `~주세요`, `(y/n)`)이 있을 때만. 터미널은 화면, 채팅은 `orca agent read <id> --limit 3` 의 마지막 assistant 글·대기 카드 | 보냄 |
+| 터미널·채팅 `waiting`·`done` | 마지막 말 8줄에 질문(`?`, `~까요`, `~주세요`, `(y/n)`)이나 Claude Code 선택 카드의 안내 줄(`Enter to select`, `Esc to cancel`)이 있을 때만. 터미널은 화면, 채팅은 `orca agent read <id> --limit 3` 에서 사람의 마지막 말 뒤의 마지막 assistant 글·대기 카드 | 보냄 |
 | FullOps 결정 | 봇으로 들어온 과제(`origin: bot`)의 열린 결정, 만료 전 | 보냄 |
 | FullOps 판정 | 같은 과제의 `ask`·`blocked`(`fullopsAuto` 이면 `auto` 도) | 보냄 |
 | FullOps 보류·실패·escalation | 병합 보류, worker의 `escalation`, 실패한 `worker_done` | 보냄 |
@@ -297,6 +297,19 @@ Grok Bot 루틴은 `fullops.decision`, `claude.question` 과 같은 방식으로
 - **`bot.needs_you` 의 `text`:** `question.text` 에 선택지가 이미 풀려 있어 두 번 나왔습니다. `ask.context` 를 씁니다.
 
 시험 뒤 정리: 개발 플러그인 `local.grokbot-notify` 는 지우지 않고 비활성화만 했습니다(설정에 로컬 시험 라우트가 남아 있음). helm-probe 채팅에는 `실측 C: 어느 쪽?` 카드가 답을 기다리고 있습니다.
+
+### 8.1 0.7.0 실측 (2026-11-26)
+
+설치본을 0.7.0(커밋 936f435)으로 올리고, 이 워크트리의 시험 터미널에서 Claude Code 2.1.332로 AskUserQuestion 카드 하나(`[orca-helm 실측] 시험 질문입니다. 아무거나 고르세요.`, 선택지 A·B)를 띄웠습니다.
+
+| 확인 | 결과 |
+| --- | --- |
+| Orca가 보고한 상태 | `blocked` 가 아니라 **`waiting`** |
+| bot:쿠어 메일 | **0통.** 카드 글에 `?` 가 없어 질문으로 보지 않음. 플러그인 저장소의 쿠어 기록에 그 터미널은 `working` 뿐 |
+| Grok Bot | 0건(`grokProjectAlerts` 기본 꺼짐, 오늘 집계 없음) |
+| orca-helm-ask 훅 | 카드가 늦지 않게 바로 뜸 |
+
+0.7.1에서 카드의 안내 줄을 질문으로 칩니다. 이 카드 화면을 그대로 테스트에 넣었습니다. 시험 터미널은 카드를 취소하고 닫았습니다.
 
 ## 9. 남은 결정
 

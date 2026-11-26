@@ -509,7 +509,31 @@ const clip = (str, chars) => (str.length > chars ? `${str.slice(0, chars - 1)}�
 
 /** A hint only, by fixed rules: one of the tail's last lines asks something. False means no rule matched. */
 export function tailNeedsInput(tail) {
-  return askLines(tail).some((line) => ASKS.test(line))
+  return askLines(tail).some((line) => ASKS.test(line)) || Boolean(cardOf(tail))
+}
+
+// Claude Code's choice card (AskUserQuestion; Orca reports it as `waiting`): its footer says so, whatever the
+// question's words, which need no `?` ("아무거나 고르세요."). Seen 2026-11-26 with Claude Code 2.1.332. The footer is a
+// line of its own, so words that only quote it ("Enter to select ...를 질문으로 봅니다") are no card.
+const CARD_FOOTER = /^\s*(?:Enter to select|Esc to cancel)\b/
+const CARD_HEAD = /^\s*(?:←\s*)?☐/
+const CARD_LINES = 20
+
+/** The card among the tail's last lines: the question under its `☐` header (else the line above the first choice) and its numbered choices. */
+function cardOf(tail) {
+  const lines = String(tail ?? '').split('\n').filter((line) => line.trim())
+  const end = lines.findLastIndex((line) => CARD_FOOTER.test(line))
+  if (end === -1 || end < lines.length - ASK_LINES) return null
+  const head = lines.slice(0, end).findLastIndex((line) => CARD_HEAD.test(line))
+  const body = lines.slice(head === -1 ? Math.max(0, end - CARD_LINES) : head + 1, end)
+  const first = body.findIndex((line) => OPTION.test(line))
+  // No numbered choice above the footer: no card.
+  if (first === -1) return null
+  const question = first > 0 ? body[head === -1 ? first - 1 : 0] : null
+  return {
+    question: question ? clip(question.replace(MARKER, '').trim(), 300) : null,
+    options: body.filter((line) => OPTION.test(line)).map((line) => clip(OPTION.exec(line)[1].trim(), 120)),
+  }
 }
 
 /** The numbered choices right after the question line, else right before it. */
@@ -534,6 +558,7 @@ export function screenFields(text) {
   const tail = text.slice(start)
   const lines = askLines(tail)
   const at = lines.findLastIndex((line) => ASKS.test(line))
+  const card = at === -1 ? cardOf(tail) : null
   let reply = -1
   for (const match of text.matchAll(REPLY_START)) reply = match.index
   const replyLine = reply === -1 ? '' : text.slice(reply).split('\n', 1)[0]
@@ -541,9 +566,9 @@ export function screenFields(text) {
   if (replyHead && replyHead.length > HEAD_CHARS) replyHead = replyHead.slice(0, replyHead.lastIndexOf('\n', HEAD_CHARS) + 1 || HEAD_CHARS).trimEnd()
   return {
     tail,
-    needsInput: at !== -1,
-    question: at === -1 ? null : clip(lines[at].replace(MARKER, '').trim(), 300),
-    options: at === -1 ? [] : YES_NO.test(lines[at]) ? ['y', 'n'] : optionsAround(lines, at),
+    needsInput: at !== -1 || Boolean(card),
+    question: card ? card.question : at === -1 ? null : clip(lines[at].replace(MARKER, '').trim(), 300),
+    options: card ? card.options : at === -1 ? [] : YES_NO.test(lines[at]) ? ['y', 'n'] : optionsAround(lines, at),
     result: replyLine ? clip(replyLine.replace(MARKER, '').trim(), 200) : null,
     replyHead,
   }

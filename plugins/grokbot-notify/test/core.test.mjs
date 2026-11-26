@@ -321,3 +321,37 @@ test('botMail: a few masked lines with where it is and the command that reads it
   assert.doesNotMatch(decision.body + decision.subject, /s3cret-token/)
   assert.match(decision.body, /\nowner's answer goes in: orca-helm decide shop\/D001/)
 })
+
+
+test("Claude Code's AskUserQuestion card asks even without a `?`: question and choices from the card", () => {
+  // `orca terminal read` of a real card, 2026-11-26 (Claude Code 2.1.332); Orca reported this terminal `waiting`.
+  const card = screenText([
+    ' ▐▛███▛█   Claude Code v2.1.332',
+    '❯ [orca-helm 실측] AskUserQuestion 도구를 딱 한 번 써서 이렇게 물어라',
+    '─'.repeat(93),
+    ' ☐ 시험',
+    '[orca-helm 실측] 시험 질문입니다. 아무거나 고르세요.',
+    '❯ 1. A',
+    '     선택지 A',
+    '  2. B',
+    '     선택지 B',
+    '  3. Type something.',
+    '─'.repeat(93),
+    '  4. Chat about this',
+    'Enter to select · ↑/↓ to navigate · Esc to cancel',
+  ])
+  assert.equal(tailNeedsInput(card), true)
+  const fields = screenFields(card)
+  assert.equal(fields.question, '[orca-helm 실측] 시험 질문입니다. 아무거나 고르세요.')
+  assert.deepEqual(fields.options, ['A', 'B', 'Type something.', 'Chat about this'])
+  // A card the person already closed is gone from the last lines.
+  assert.equal(tailNeedsInput(`${card}\n${Array.from({ length: 9 }, (_, i) => `● 줄 ${i}`).join('\n')}`), false)
+})
+
+
+test('a card is its own footer line under numbered choices: words that only name the footer are no card', () => {
+  const said = screenText(['● 카드 안내 줄(Enter to select / Esc to cancel)을 질문으로 봅니다.', '● 끝났습니다.'])
+  assert.equal(tailNeedsInput(said), false)
+  assert.equal(tailNeedsInput(screenText(['● 끝났습니다.', 'Enter to select · ↑/↓ to navigate · Esc to cancel'])), false, 'no choice above it')
+  assert.equal(tailNeedsInput(screenText([' ☐ 시험', '고르세요.', '❯ 1. A', '  2. B', '  Esc to cancel'])), true)
+})
