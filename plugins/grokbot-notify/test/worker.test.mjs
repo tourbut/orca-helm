@@ -1024,3 +1024,32 @@ test('Orca bot mail: an answered chat question stays quiet, one refusing bot hol
   assert.equal(logs.filter((line) => line.startsWith('Orca bot 노리 mail failed')).length, tried)
   assert.equal(mails().length, 0)
 })
+
+
+test('Orca bot mail: a waiting mail outlives a restart whose `orca bot list` fails, and goes once the list reads again', async (t) => {
+  const git = gitFixture()
+  t.after(() => git.cleanup())
+  const { script, mails } = fakeBotOrca(t)
+  const terminals = { t1: screen(['● 작업 중']), t5: screen(['● 권한이 필요합니다']) }
+  const store = {}
+  const start = async () => {
+    const mock = mockOrca([{ id: 'wt1', kind: 'worktree', name: 'main', branch: 'main', path: git.worktree }], terminals, store)
+    Object.assign(mock.settings, { grokProjectAlerts: false, orcaBots: '' })
+    await activate(mock.orca)
+    return mock
+  }
+  const event = (terminalId, state) => ({ workspaceId: 'wt1', paneKey: `p:${terminalId}`, terminalId, title: 'x', state, receivedAt: 1 })
+
+  script({ bots: [{ name: '쿠어' }], mailDown: true })
+  await (await start()).emit(event('t5', 'blocked'))
+  assert.equal(Object.keys(store.botPending).length, 1)
+  // Restarted while Orca cannot list bots: the waiting mail is kept, not taken for "no bot".
+  script({ botsDown: true })
+  await (await start()).emit(event('t1', 'working'))
+  assert.equal(Object.keys(store.botPending).length, 1)
+  assert.equal(mails().length, 0)
+  script({ bots: [{ name: '쿠어' }] })
+  await (await start()).emit(event('t1', 'working'))
+  assert.deepEqual(mails().map((mail) => [mail.to, mail.subject]), [['bot:쿠어', 'shop/main: blocked - x']])
+  assert.deepEqual(store.botPending, {})
+})

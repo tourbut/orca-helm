@@ -347,3 +347,11 @@ test("Claude Code's AskUserQuestion card asks even without a `?`: question and c
   // A card the person already closed is gone from the last lines.
   assert.equal(tailNeedsInput(`${card}\n${Array.from({ length: 9 }, (_, i) => `● 줄 ${i}`).join('\n')}`), false)
 })
+
+
+test('a card is its own footer line under numbered choices: words that only name the footer are no card', () => {
+  const said = screenText(['● 카드 안내 줄(Enter to select / Esc to cancel)을 질문으로 봅니다.', '● 끝났습니다.'])
+  assert.equal(tailNeedsInput(said), false)
+  assert.equal(tailNeedsInput(screenText(['● 끝났습니다.', 'Enter to select · ↑/↓ to navigate · Esc to cancel'])), false, 'no choice above it')
+  assert.equal(tailNeedsInput(screenText([' ☐ 시험', '고르세요.', '❯ 1. A', '  2. B', '  Esc to cancel'])), true)
+})

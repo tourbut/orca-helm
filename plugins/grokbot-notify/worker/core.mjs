@@ -513,8 +513,9 @@ export function tailNeedsInput(tail) {
 }
 
 // Claude Code's choice card (AskUserQuestion; Orca reports it as `waiting`): its footer says so, whatever the
-// question's words, which need no `?` ("아무거나 고르세요."). Seen 2026-11-26 with Claude Code 2.1.332.
-const CARD_FOOTER = /\bEnter to select\b|\bEsc to cancel\b/
+// question's words, which need no `?` ("아무거나 고르세요."). Seen 2026-11-26 with Claude Code 2.1.332. The footer is a
+// line of its own, so words that only quote it ("Enter to select ...를 질문으로 봅니다") are no card.
+const CARD_FOOTER = /^\s*(?:Enter to select|Esc to cancel)\b/
 const CARD_HEAD = /^\s*(?:←\s*)?☐/
 const CARD_LINES = 20
 
@@ -526,6 +527,8 @@ function cardOf(tail) {
   const head = lines.slice(0, end).findLastIndex((line) => CARD_HEAD.test(line))
   const body = lines.slice(head === -1 ? Math.max(0, end - CARD_LINES) : head + 1, end)
   const first = body.findIndex((line) => OPTION.test(line))
+  // No numbered choice above the footer: no card.
+  if (first === -1) return null
   const question = first > 0 ? body[head === -1 ? first - 1 : 0] : null
   return {
     question: question ? clip(question.replace(MARKER, '').trim(), 300) : null,

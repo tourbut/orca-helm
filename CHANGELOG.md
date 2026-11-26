@@ -2,9 +2,9 @@
 
 ## 0.7.1
 
-- A Claude Code question card (AskUserQuestion) in a terminal now reaches the Orca bot. Orca reports it as `waiting`, and its words need no `?` ("아무거나 고르세요."), so 0.7.0 took it for an idle screen and sent nothing (measured 2026-11-26). The card's footer (`Enter to select`, `Esc to cancel`) now counts as asking; the mail carries the card's question and choices.
+- A Claude Code question card (AskUserQuestion) in a terminal now reaches the Orca bot. Orca reports it as `waiting`, and its words need no `?` ("아무거나 고르세요."), so 0.7.0 took it for an idle screen and sent nothing (measured 2026-11-26). A line that starts with the card's footer (`Enter to select`, `Esc to cancel`), under at least one numbered choice, now counts as asking; the mail carries the card's question and choices. Words that only quote the footer do not.
 - A chat's words are read only after the person last spoke, so a question already answered is not sent again.
-- A terminal mail waiting for a retry no longer waits behind another bot's refused one, and is dropped when `orcaBots` no longer names that bot for its workspace.
+- A terminal mail waiting for a retry no longer waits behind another bot's refused one, and is dropped when `orcaBots` no longer names that bot for its workspace. When `orca bot list` cannot be read (the default bot), it is kept, not dropped.
 
 ## 0.7.0
 
