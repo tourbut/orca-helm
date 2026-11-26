@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { askDir, askFile, isAskId, isOpen, loadJson, saveJson } from '../../../lib/ask.mjs'
+import { isFullOpsWorker } from '../../../lib/fullops.mjs'
 import { runOrca } from '../../../lib/orca.mjs'
 import {
   DECISION_VERSION,
@@ -397,19 +398,46 @@ async function deliver(orca, route, payload, auth, note = () => {}) {
  * shortcut: a timeout counts as failed and the alert goes again next time; a bot may then get it twice.
  */
 async function mailBot(orca, route, payload, note) {
-  return (await sendMail(orca, route.bot, botMail(payload), note)) ? 200 : null
+  return (await sendMail(orca, route.bot, botMail(payload), note, route.sender)) ? 200 : null
 }
 
-/** One botMail to `bot`; true when Orca took it. Logs name the bot, never the body. */
-async function sendMail(orca, bot, { type, subject, body }, note = () => {}) {
+/**
+ * One botMail to `bot`; true when Orca took it. Logs name the bot, never the body. Orca takes mail only from a sender it
+ * can name, and a plugin worker is none, so it goes `--from` a live terminal: `sender` is `{ from, origin }`, `origin`
+ * naming the real source (first line of the body) when `from` is only borrowed. No `from`: not sent, tried again later.
+ */
+async function sendMail(orca, bot, { type, subject, body }, note = () => {}, sender = null) {
+  if (!sender?.from) {
+    note('mail.no-sender')
+    return false
+  }
+  const text = sender.origin ? `source: ${sender.origin} (mailed through terminal ${sender.from} only to reach you; that terminal did not ask, do not answer it)\n${body}` : body
   try {
-    await runOrca(['orchestration', 'send', `--to=bot:${bot}`, `--type=${type}`, `--subject=${subject}`, `--body=${body}`], { timeout: ORCA_MS })
+    await runOrca(['orchestration', 'send', `--from=${sender.from}`, `--to=bot:${bot}`, `--type=${type}`, `--subject=${subject}`, `--body=${text}`], { timeout: ORCA_MS })
     return true
   } catch (err) {
     orca.log(`Orca bot ${bot} mail failed: ${errText(err)}`)
     note('mail.failed')
     return false
   }
+}
+
+/**
+ * A live terminal to mail from for an event without one of its own (a chat, FullOps records): the repo's FullOps
+ * coordinator (by FullOps's own worker rule), else one in the same worktree, the most recently active first; null when
+ * none is live. A chat cannot be named as a sender (`session_caller_chat_not_declarable`).
+ */
+async function borrowedSender(info) {
+  let terminals
+  try {
+    ;({ terminals } = await runOrca(['terminal', 'list'], { timeout: ORCA_MS }))
+  } catch {
+    return null
+  }
+  const live = (terminals ?? []).filter((t) => t?.handle && t.connected && !t.orphaned && t.worktreePath).sort((a, b) => (b.lastOutputAt ?? 0) - (a.lastOutputAt ?? 0))
+  const fold = (p) => (process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p))
+  const coordinator = info.repo ? live.find((t) => isFullOps(t.worktreePath) && !isFullOpsWorker(t.worktreePath, t.branch) && repoOf(t.worktreePath) === info.repo) : null
+  return (coordinator ?? (info.path ? live.find((t) => fold(t.worktreePath) === fold(info.path)) : null))?.handle ?? null
 }
 
 const remindMsOf = (settings) => {
@@ -620,7 +648,9 @@ export default async function activate(orca) {
       if (!isFullOps(info.path)) return carried
       const settings = await readSettings(orca)
       const grok = toGrok(settings) ? readRoutes(settings).filter((route) => matchesWorkspace(route.workspaces, info)) : []
-      const routes = [...grok, ...((await botTargets(settings, info)) ?? [])]
+      const bots = (await botTargets(settings, info)) ?? []
+      const sender = bots.length > 0 ? { from: await borrowedSender(info), origin: `FullOps ${info.repo ?? info.path}` } : null
+      const routes = [...grok, ...bots.map((bot) => ({ ...bot, sender }))]
       if (routes.length === 0) return carried
       const common = gitCommonDir(info.path, gitFileOf(info.path))
       const alerts = recordAlerts(orca, common, settings, warned)
@@ -891,7 +921,9 @@ export default async function activate(orca) {
           pending.delete(key)
           continue
         }
-        if (await sendMail(orca, entry.bot, entry.mail)) {
+        const sender = entry.from ? { from: entry.from } : { from: await borrowedSender(entry.where ?? {}), origin: entry.origin }
+        if (!sender.from) continue // No live terminal to send it from yet: it waits.
+        if (await sendMail(orca, entry.bot, entry.mail, undefined, sender)) {
           pending.delete(key)
           debouncerFor(entry.botKey).delivered(entry.terminal, entry.state)
         } else refused.add(entry.botKey)
@@ -924,16 +956,19 @@ export default async function activate(orca) {
       const tailKey = screen && tailKeyOf(screen)
       const remindMs = remindMsOf(settings)
       const eventId = terminalEventId(event, terminal, tailKey, now)
+      let sender = null
       for (const bot of bots) {
         const { send, why } = debouncerFor(bot.key)(terminal, state, now, remindMs, tailKey)
         count(bot, `${send ? 'sent' : 'held'}.${why}`)
         if (!send) continue
         const payload = buildPayload(event, { worktree: info.name, branch: info.branch, repo: info.repo, route: bot.name, host: os.hostname(), screen, eventId, reminder: why === 'reminder' })
         const mail = botMail(payload)
-        if (await sendMail(orca, bot.bot, mail, (name) => count(bot, name))) continue
+        // A terminal sends as itself; a chat cannot, so it borrows a terminal and says where it came from.
+        sender ??= event.terminalId ? { from: event.terminalId } : { from: await borrowedSender(info), origin: `chat ${chatIdOf(event.paneKey) ?? event.paneKey}` }
+        if (await sendMail(orca, bot.bot, mail, (name) => count(bot, name), sender)) continue
         // Not mailed is not sent: this terminal's next report, or any other event, tries again.
         debouncerFor(bot.key).forget(terminal, state)
-        pending.set(`${bot.key}#${terminal}`, { bot: bot.bot, botKey: bot.key, terminal, state, mail, at: now, where: { name: info.name, repo: info.repo, path: info.path } })
+        pending.set(`${bot.key}#${terminal}`, { bot: bot.bot, botKey: bot.key, terminal, state, mail, at: now, where: { name: info.name, repo: info.repo, path: info.path }, from: event.terminalId ?? null, origin: sender.origin ?? null })
       }
     } catch (err) {
       orca.log(`Orca bot forward failed: ${errText(err)}`)
