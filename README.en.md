@@ -5,7 +5,7 @@ English · [한국어](README.md)
 **orca-helm lets Grok Bot drive the Orca IDE running on a user's PC (Windows or macOS) remotely, without fuss.** It is one set of two parts, and you need both.
 
 1. **The orca-helm CLI.** Grok Bot calls it as a shell command on the PC. One command each for checking Orca's state (`status`), finding and reading terminals (`find`, `read`), handing out work (`send`, `start`), and waiting for it to finish (`wait`), and answering FullOps decisions (`decisions`, `decide`).
-2. **The grokbot-notify plugin.** You install it in Orca. It receives Orca's own alert hook (the plugin event `agent.status.changed`) and, when an agent becomes `done`, `waiting` or `blocked`, hands that alert to Grok Bot. It has nothing to do with GitHub issue or push webhooks.
+2. **The grokbot-notify plugin.** You install it in Orca. It receives Orca's own alert hook (the plugin event `agent.status.changed`) and hands what a person must answer (a stopped terminal or chat, a FullOps decision and so on) to an Orca bot (such as 쿠어) as local mail. Up to 0.6.0 it sent project alerts straight to Grok Bot; now it does only when `grokProjectAlerts` is on. The `grokbot` in its name is that history; name and path stay so installs keep working. It has nothing to do with GitHub issue or push webhooks. See [docs/orca-bots.md](docs/orca-bots.md) for the structure.
 
 Grok Bot hands out work and reads results through the CLI, and learns when to look again from the plugin's alerts. orca-helm is a dependency-free Node.js (18+, ESM) program that wraps the official `orca` CLI.
 
@@ -238,9 +238,18 @@ If none is found, it lists where it looked and exits 1.
 
 ## The grokbot-notify plugin
 
-It receives Orca's plugin alert hook `agent.status.changed` and POSTs JSON to the Grok Bot routine URL. It is the other half of the set: Grok Bot learns from these alerts when to `read`. Install and connect it with [Install](#install) steps 2 and 3.
+It receives Orca's plugin alert hook `agent.status.changed` and mails what a person must answer to an Orca bot. To the Grok Bot routine URL it POSTs only Orca bots' Needs you items, and project alerts (the terminal alerts, FullOps events and question cards below) only when `grokProjectAlerts` is on. Install and connect it with [Install](#install) steps 2 and 3.
+
+### To an Orca bot
+
+- **Which bot:** the lines of the `orcaBots` setting (`bot name | workspaces`, workspaces as in `Routes`). Empty: the one bot `orca bot list` shows; with several bots, none, and a log line. `off` sends none.
+- **What:** terminals and chats that are `blocked` (a permission prompt or question card), a `waiting` whose last lines ask something, and the FullOps events below (decisions, `ask` and `blocked` judgments, holds, failures, escalations). Everyday states such as `done` and `working` do not go.
+- **The mail:** `orca orchestration send --to bot:<name> --type question` (local; no login, no webhook). A few lines: the summary, project, worktree and branch, what it asks, the command that reads it (`orca terminal read --terminal <handle>`, or `orca agent read <id> --limit 3` for a chat) and the command an answer goes in, when there is one. Secrets are masked by the rules below.
+- **No loop, no repeats:** a bot's own chat (its folder workspace under `~/.orca/bots/`) never goes to that bot. The same question goes once per bot, and so does a FullOps event (the same store as the repeat check and records below). Reminders follow `remindMinutes`. A failed mail (a 10 s timeout included) logs the bot's name only and goes again at the next report.
 
 ### Behavior
+
+What follows is what goes to Grok Bot routines; project alerts apply only with `grokProjectAlerts` on.
 
 - **Routing per bot:** an alert goes once to every `Routes` line whose workspaces match. An entry matches when it equals the repo name or the Orca workspace name (case-insensitive), or appears in the worktree path. A line with an empty workspaces field matches every workspace. When no line matches, nothing happens: no network call and no repeat bookkeeping.
 - With no valid `Routes` line, the single `webhookUrl` gets every workspace, as before.
@@ -359,6 +368,8 @@ They appear under the plugin in Orca **Settings**.
 
 | Key | Shown as | Meaning |
 | --- | --- | --- |
+| `orcaBots` | Orca bots (one per line) | The Orca bots that get project alerts a person must answer. One per line: `bot name \| workspaces`. Empty: the only bot; several: none; `off`: none |
+| `grokProjectAlerts` | Also send project alerts to Grok Bot | On: terminal states, FullOps events and question cards also go to Grok Bot routines (the behavior up to 0.6.0). Default `false` |
 | `routes` | Routes (one Grok Bot per line) | Usually written by the **Grok Bot** panel. Multiline, one bot per line: `bot name \| workspace1,workspace2 \| routine URL \| Authorization value`. After saving, the last field reads `(saved)`. See [Install step 3](#3-connect-the-grok-bot-routine) |
 | `webhookUrl` | Grok Bot routine URL | Only while `routes` has no valid line: one routine URL for every workspace. `auth.set`'s `url` also sets it |
 | `authValue` | Authorization value | Only while `routes` has no valid line: the Authorization value for that URL. Paste once; the worker moves it into secrets right away and clears the field (when it cannot, the value stays in the field and is sent from there) |

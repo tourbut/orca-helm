@@ -38,7 +38,8 @@ async function startStub(statuses) {
 
 /** `terminals` maps a terminal id to its output lines; without it this Orca has no terminal.read. */
 function mockOrca(workspaces = [], terminals = null, store = {}) {
-  const settings = { states: 'done,waiting,blocked', remindMinutes: 30, webhookUrl: '', authValue: '' }
+  // Grok Bot gets project alerts as up to 0.6.0; orcaBots off, so no test runs this PC's `orca bot list` or mails its bot.
+  const settings = { states: 'done,waiting,blocked', remindMinutes: 30, webhookUrl: '', authValue: '', grokProjectAlerts: true, orcaBots: 'off' }
   const secrets = {}
   // Set fail.get / fail.set to make that secrets method throw, as Orca's store does without OS encryption.
   const fail = { get: false, set: false }
@@ -753,4 +754,150 @@ test("an Orca bot's Needs you item goes once to the route that names the bot, an
   await activate(upgraded.orca)
   await upgraded.emit(settled)
   assert.deepEqual(stub.received.map(({ body }) => body.item).sort(), [1, 3])
+})
+
+/**
+ * A stand-in for `orca bot list` and `orca orchestration send|inbox`: node runs ./bot or ./orchestration, which answer
+ * from script.json; each send's arguments go to mails.json.
+ */
+function fakeBotOrca(t) {
+  const fake = fs.mkdtempSync(path.join(os.tmpdir(), 'grokbot-notify-mail-'))
+  fs.writeFileSync(path.join(fake, 'package.json'), '{"type":"commonjs"}')
+  const head = `const fs = require('fs')
+const script = JSON.parse(fs.readFileSync('script.json', 'utf8'))
+const answer = (result) => process.stdout.write(JSON.stringify({ ok: true, result }))
+`
+  fs.writeFileSync(path.join(fake, 'bot'), `${head}answer({ bots: script.bots })`)
+  fs.writeFileSync(
+    path.join(fake, 'orchestration'),
+    `${head}if (process.argv[2] === 'inbox') answer({ messages: [] })
+else if (script.mailDown) {
+  process.stdout.write(JSON.stringify({ ok: false, error: { message: 'orca is down' } }))
+  process.exitCode = 1
+} else {
+  const mails = fs.existsSync('mails.json') ? JSON.parse(fs.readFileSync('mails.json', 'utf8')) : []
+  mails.push(process.argv.slice(3))
+  fs.writeFileSync('mails.json', JSON.stringify(mails))
+  answer({})
+}`
+  )
+  const script = (value) => fs.writeFileSync(path.join(fake, 'script.json'), JSON.stringify(value))
+  script({ bots: [{ name: '쿠어' }] })
+  const cwd = process.cwd()
+  const bin = process.env.ORCA_HELM_BIN
+  process.chdir(fake)
+  process.env.ORCA_HELM_BIN = process.execPath
+  t.after(() => {
+    process.chdir(cwd)
+    if (bin === undefined) delete process.env.ORCA_HELM_BIN
+    else process.env.ORCA_HELM_BIN = bin
+    fs.rmSync(fake, { recursive: true, force: true })
+  })
+  /** Each mail since the last call, as { to, type, subject, body }. */
+  const mails = () => {
+    const file = path.join(fake, 'mails.json')
+    const list = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : []
+    fs.rmSync(file, { force: true })
+    const field = (arg) => [arg.slice(2, arg.indexOf('=')), arg.slice(arg.indexOf('=') + 1)]
+    return list.map((args) => Object.fromEntries(args.filter((arg) => arg.startsWith('--') && arg.includes('=')).map(field)))
+  }
+  return { script, mails }
+}
+
+test('what waits for a person goes to the Orca bot by local mail, once; Grok Bot gets no project alert by default', async (t) => {
+  const stub = await startStub([])
+  const git = gitFixture()
+  t.after(() => {
+    stub.close()
+    git.cleanup()
+  })
+  const { script, mails } = fakeBotOrca(t)
+  const folder = path.join(git.root, 'bots', 'bot')
+  fs.mkdirSync(folder, { recursive: true })
+  fs.writeFileSync(path.join(folder, 'bot.json'), JSON.stringify({ id: 'b1', name: '쿠어' }))
+  fs.mkdirSync(path.join(git.worktree, '.fullops-squad'))
+  fs.writeFileSync(path.join(git.worktree, '.fullops-squad', 'fullops.json'), '{}')
+  const records = path.join(git.root, 'shop', '.git', 'fullops-decisions')
+  fs.mkdirSync(records)
+  fs.writeFileSync(path.join(records, 'D001.json'), JSON.stringify({ version: 1, id: 'D001', status: 'open', question: '병합할까요?', options: ['진행', '보류'], origin: 'bot' }))
+
+  const workspaces = [
+    { id: 'wt1', kind: 'worktree', name: 'main', branch: 'main', path: git.worktree },
+    { id: 'folder:f1', kind: 'folder', name: '쿠어', branch: null, path: folder },
+  ]
+  const terminals = {
+    t1: screen(['● 이 명령을 실행할까요?', '  Authorization: Bearer s3cret-token-0123456789']),
+    t2: screen(['● 다 끝났습니다. PR #9를 열었습니다.']),
+    t3: screen(['● main으로 머지할까요?']),
+    t4: screen(['● 배포할까요?']),
+  }
+  const start = async (settings = {}) => {
+    const mock = mockOrca(workspaces, terminals)
+    Object.assign(mock.settings, { grokProjectAlerts: false, orcaBots: '', routes: `풀로 | | ${stub.url} | Bearer a1` }, settings)
+    await activate(mock.orca)
+    return mock
+  }
+  const event = (terminalId, state) => ({ workspaceId: 'wt1', paneKey: `p:${terminalId}`, terminalId, title: 'fix login', state, receivedAt: 1 })
+
+  const { emit, logs } = await start()
+  await emit(event('t1', 'working'))
+  // The FullOps decision goes once, with the command the owner's answer goes in.
+  const [decision, ...more] = mails()
+  assert.equal(more.length, 0)
+  assert.deepEqual([decision.to, decision.type], ['bot:쿠어', 'question'])
+  assert.equal(decision.subject, 'shop/D001: decision waiting - 병합할까요? [진행 / 보류]')
+  assert.match(decision.body, /\nowner's answer goes in: orca-helm decide shop\/D001 --answer <answer> --by <who>$/)
+
+  await emit(event('t1', 'blocked'))
+  await emit(event('t1', 'blocked'))
+  const [blocked, ...rest] = mails()
+  assert.equal(rest.length, 0, 'the same question goes once')
+  assert.equal(blocked.subject, 'shop/main: blocked - fix login')
+  assert.match(blocked.body, /^shop\/main: blocked - fix login\nproject: shop \| worktree: main \| branch: main\nasks: 이 명령을 실행할까요\?\nread: orca terminal read --terminal t1$/)
+  // Asked again after a turn: it goes again.
+  await emit(event('t1', 'working'))
+  await emit(event('t1', 'blocked'))
+  assert.equal(mails().length, 1)
+
+  // `waiting` after a turn that asks nothing stays quiet; one that ends in a question goes.
+  await emit(event('t2', 'done'))
+  await emit(event('t2', 'waiting'))
+  await emit(event('t3', 'done'))
+  await emit(event('t3', 'waiting'))
+  assert.deepEqual(mails().map((mail) => mail.body.split('\n')[2]), ['asks: main으로 머지할까요?'])
+
+  // A project chat has no terminal: the mail says how to read it. The bot's own chat never goes back to it.
+  await emit({ workspaceId: 'wt1', paneKey: 'structured-agent-session-c9:x', title: 'chat', state: 'blocked', receivedAt: 1 })
+  await emit({ workspaceId: 'folder:f1', paneKey: 'structured-agent-session-c1:x', title: '쿠어', state: 'blocked', receivedAt: 1 })
+  assert.deepEqual(mails().map((mail) => mail.body.split('\n').at(-1)), ['read: orca agent read c9 --limit 3'])
+
+  // A mail Orca refuses is not sent: the next report tries again. Logs never carry the body.
+  script({ bots: [{ name: '쿠어' }], mailDown: true })
+  await emit(event('t4', 'waiting'))
+  assert.ok(logs.includes('Orca bot 쿠어 mail failed: orca is down'))
+  script({ bots: [{ name: '쿠어' }] })
+  await emit(event('t4', 'waiting'))
+  assert.equal(mails().length, 1)
+  assert.equal(stub.received.length, 0, 'no project alert reached Grok Bot')
+
+  // Several bots and no setting: none gets it, and the log says why. A named bot takes only its workspaces.
+  script({ bots: [{ name: '쿠어' }, { name: 'helm-probe' }] })
+  const several = await start()
+  await several.emit(event('t9', 'blocked'))
+  assert.ok(several.logs.includes('2 Orca bots and no orcaBots setting: project alerts go to no bot'))
+  assert.equal(mails().length, 0)
+  const named = await start({ orcaBots: '노리 | jevpet\n쿠어 | shop' })
+  await named.emit(event('t9', 'blocked'))
+  assert.deepEqual(mails().map((mail) => mail.to), ['bot:쿠어', 'bot:쿠어'], 'the decision and the blocked terminal, to 쿠어 only')
+
+  // A card the ask hook holds is let go at once: no route takes it, so Claude Code shows it.
+  const ASK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'grokbot-ask-'))
+  process.env.ORCA_HELM_ASK_DIR = ASK_DIR
+  t.after(() => fs.rmSync(ASK_DIR, { recursive: true, force: true }))
+  const until = new Date(Date.now() + 60_000).toISOString()
+  fs.writeFileSync(path.join(ASK_DIR, 'Q0000000e.json'), JSON.stringify({ version: 1, id: 'Q0000000e', workspaceId: 'wt1', questions: [{ question: 'Which?', options: [{ label: 'a' }] }], until, pid: process.pid }))
+  const cards = await start()
+  await cards.emit(event('t1', 'working'))
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(ASK_DIR, 'Q0000000e.sent.json'), 'utf8')).routes, [])
+  assert.equal(stub.received.length, 0)
 })

@@ -274,6 +274,49 @@ export function botItemPayload(item, botName, where) {
   }
 }
 
+/** An Orca bot as a route: its key has a `|`, which no Routes name can, so its records never mix with a Grok Bot's. */
+export const botRoute = (name, workspacesText = '') => ({ key: `orca-bot|${name.toLowerCase()}`, name: `bot:${name}`, bot: name, workspaces: parseWorkspaces(workspacesText) })
+
+/**
+ * The `orcaBots` setting: one Orca bot per line, `name | workspaces` (workspaces as in Routes, empty for every
+ * workspace); a later line for the same bot replaces the earlier one. A line `off` sends to none. Null when it names
+ * no bot, so the caller takes the default one.
+ */
+export function parseBots(str) {
+  const rows = String(str ?? '')
+    .split(/\r?\n/)
+    .map((raw) => raw.trim())
+    .filter((line) => line && !line.startsWith('#'))
+  if (rows.some((line) => line.toLowerCase() === 'off')) return []
+  const bots = new Map()
+  for (const [name, workspaces = ''] of rows.map((line) => line.split('|').map((part) => part.trim()))) {
+    if (name) bots.set(name.toLowerCase(), botRoute(name, workspaces))
+  }
+  return bots.size > 0 ? [...bots.values()] : null
+}
+
+/**
+ * Local mail for an Orca bot from an alert payload: the one-line `text`, where it is, and how to look or answer,
+ * masked. The bot picks what reaches its owner, so it stays a few lines. `question`: each one waits for a person.
+ */
+export function botMail(payload) {
+  const chat = /^structured-agent-session-([^:]+):/.exec(payload.paneKey ?? '')?.[1]
+  const read = payload.terminalId ? `orca terminal read --terminal ${payload.terminalId}` : chat ? `orca agent read ${chat} --limit 3` : null
+  const body = maskSecrets(
+    [
+      payload.text,
+      `project: ${payload.repo ?? '-'} | worktree: ${payload.worktree ?? '-'}${payload.branch ? ` | branch: ${payload.branch}` : ''}`,
+      payload.question ? `asks: ${payload.question}${payload.options?.length ? ` [${payload.options.join(' / ')}]` : ''}` : null,
+      read ? `read: ${read}` : null,
+      payload.reply ? `owner's answer goes in: ${payload.reply}` : null,
+      payload.reminder ? 'still waiting (reminder)' : null,
+    ]
+      .filter(Boolean)
+      .join('\n')
+  )
+  return { type: 'question', subject: clip(body.split('\n', 1)[0], 80), body }
+}
+
 const folded = (value) => String(value ?? '').toLowerCase().replaceAll('\\', '/')
 
 /** A route's workspaces field: lowercased entries. Empty means every workspace. */

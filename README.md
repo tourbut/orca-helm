@@ -5,7 +5,7 @@
 **orca-helm은 Grok Bot이 사용자 PC(Windows/macOS)에서 돌아가는 Orca IDE를 원격으로 쉽게 다루기 위한 도구 세트입니다.** 두 부분이 한 세트이고, 둘 다 설치해야 합니다.
 
 1. **orca-helm CLI** — Grok Bot이 PC의 셸에서 명령으로 호출합니다. Orca 상태 확인(`status`), 터미널 찾기·읽기(`find`, `read`), 작업 지시(`send`, `start`), 완료 대기(`wait`), FullOps 결정 조회·응답(`decisions`, `decide`)을 명령 하나씩으로 처리합니다.
-2. **grokbot-notify 플러그인** — Orca에 설치하는 플러그인입니다. Orca 자체 알림 훅(플러그인 이벤트 `agent.status.changed`)을 받아, 에이전트가 `done` / `waiting` / `blocked` 가 되면 그 알림을 Grok Bot에 넘겨줍니다. GitHub 이슈·푸시 웹훅과는 관계없습니다.
+2. **grokbot-notify 플러그인** — Orca에 설치하는 플러그인입니다. Orca 자체 알림 훅(플러그인 이벤트 `agent.status.changed`)을 받아, 사람이 답해야 하는 것(멈춘 터미널·채팅, FullOps 결정 등)을 Orca 봇(예: 쿠어)에게 로컬 메일로 넘깁니다. 0.6.0까지는 프로젝트 알림을 Grok Bot에 직접 보냈고, 지금은 설정(`grokProjectAlerts`)을 켤 때만 보냅니다. 이름의 `grokbot` 은 그 이력이며, 설치가 깨지지 않도록 이름과 경로는 그대로 둡니다. GitHub 이슈·푸시 웹훅과는 관계없습니다. 구조는 [docs/orca-bots.md](docs/orca-bots.md) 입니다.
 
 Grok Bot은 CLI로 일을 맡기고 결과를 읽으며, 플러그인 알림으로 언제 다시 볼지 압니다. 의존성 없는 Node.js(18 이상, ESM) 프로그램이고, 공식 `orca` CLI를 감쌉니다.
 
@@ -238,9 +238,18 @@ Windows에서는 `orca.cmd`(cmd.exe 래퍼, 따옴표를 깨뜨림) 대신 같�
 
 ## grokbot-notify 플러그인
 
-Orca가 플러그인에 주는 알림 훅 `agent.status.changed` 를 받아 Grok Bot 루틴 URL로 JSON을 POST합니다. orca-helm CLI와 한 세트이며, Grok Bot은 이 알림으로 언제 `read` 할지 압니다. 설치와 연결은 위 [설치](#설치) 2~3단계입니다.
+Orca가 플러그인에 주는 알림 훅 `agent.status.changed` 를 받아, 사람이 답해야 하는 것을 Orca 봇에게 로컬 메일로 보냅니다. Grok Bot 루틴 URL로는 Orca 봇의 Needs you 항목만 POST하고, 프로젝트 알림(아래 터미널 알림·FullOps 사건·질문 카드)은 `grokProjectAlerts` 를 켤 때만 POST합니다. 설치와 연결은 위 [설치](#설치) 2~3단계입니다.
+
+### Orca 봇에게 보내기
+
+- **받는 봇:** `orcaBots` 설정의 줄(`봇이름 | 워크스페이스`, 워크스페이스는 `Routes` 와 같은 규칙). 비어 있으면 `orca bot list` 에 하나뿐인 봇이 받고, 봇이 여럿이면 아무에게도 보내지 않고 로그만 남깁니다. `off` 는 보내지 않습니다.
+- **보내는 것:** `blocked`(권한 요청·질문 카드)인 터미널과 채팅, 마지막 줄들이 묻고 있는 `waiting`, 아래 FullOps 사건(결정, `ask`·`blocked` 판정, 보류, 실패, escalation). `done`·`working` 같은 일상 상태는 보내지 않습니다.
+- **메일:** `orca orchestration send --to bot:<이름> --type question`(로컬, 로그인·webhook 없음). 본문은 몇 줄입니다: 한 줄 요약, 프로젝트·워크트리·브랜치, 묻는 글, 읽는 명령(`orca terminal read --terminal <handle>`, 채팅은 `orca agent read <id> --limit 3`), 답을 넣는 명령(있을 때). 비밀값은 아래와 같은 규칙으로 가립니다.
+- **되먹임·중복:** 봇 자신의 채팅(그 봇의 `~/.orca/bots/` 폴더 워크스페이스)은 그 봇에게 보내지 않습니다. 같은 질문은 봇마다 한 번, FullOps 사건도 한 번입니다(아래 중복 억제·기록 유지와 같은 저장소). 리마인드는 `remindMinutes` 를 따릅니다. 메일이 실패하면(10초 타임아웃 포함) 로그에 봇 이름만 남기고 다음 보고 때 다시 보냅니다.
 
 ### 동작
+
+아래는 Grok Bot 루틴으로 보내는 동작입니다. 프로젝트 알림은 `grokProjectAlerts` 가 켜졌을 때만 해당합니다.
 
 - **봇별 라우팅:** 알림은 `Routes` 의 줄 가운데 워크스페이스가 맞는 봇마다 한 번씩 보냅니다. 워크스페이스 항목이 repo 이름이나 Orca 워크스페이스 이름과 같거나(대소문자 무시) worktree 경로에 들어 있으면 맞습니다. 워크스페이스 칸이 비어 있는 줄은 모든 워크스페이스에 맞습니다. 어느 줄에도 맞지 않으면 아무것도 보내지 않습니다(네트워크 호출 없음, 중복 억제 기록도 없음).
 - `Routes` 에 올바른 줄이 없으면 예전처럼 `webhookUrl` 하나로 모든 워크스페이스를 보냅니다.
@@ -360,6 +369,8 @@ Orca **Settings** 에서 이 플러그인 아래에 보입니다.
 
 | 키 | 화면 이름 | 설명 |
 | --- | --- | --- |
+| `orcaBots` | Orca bots (one per line) | 사람이 답해야 하는 프로젝트 알림을 받을 Orca 봇. 한 줄에 `봇이름 \| 워크스페이스`. 비면 하나뿐인 봇, 여럿이면 없음, `off` 는 없음 |
+| `grokProjectAlerts` | Also send project alerts to Grok Bot | 켜면 터미널 상태·FullOps 사건·질문 카드도 Grok Bot 루틴으로 보냅니다(0.6.0까지의 동작). 기본 `false` |
 | `routes` | Routes (one Grok Bot per line) | 보통은 **Grok Bot** 패널이 씁니다. 여러 줄, 한 줄에 봇 하나: `봇이름 \| 워크스페이스1,워크스페이스2 \| 루틴 URL \| Authorization 값`. 저장하면 끝 칸이 `(saved)` 로 바뀝니다. [설치 3단계](#3-grok-bot-루틴-연결) 참고 |
 | `webhookUrl` | Grok Bot routine URL | `routes` 에 올바른 줄이 없을 때만: 모든 워크스페이스를 받을 루틴 URL 하나. `auth.set` 의 `url` 로도 넣습니다 |
 | `authValue` | Authorization value | `routes` 에 올바른 줄이 없을 때만: 위 URL의 Authorization 값. 붙여 넣으면 워커가 바로 secrets로 옮기고 칸을 비웁니다(옮길 수 없으면 칸에 남은 값으로 보냅니다) |
