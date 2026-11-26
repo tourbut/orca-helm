@@ -840,14 +840,20 @@ export default async function activate(orca) {
     return bots.filter((bot) => bot.bot.toLowerCase() !== own && matchesWorkspace(bot.workspaces, info))
   }
 
-  /** The chat's last words (an assistant message or a pending question card), masked; null when it cannot be read. */
+  /**
+   * The chat's last words since the person last spoke (its last assistant message or pending question card), masked;
+   * null when it cannot be read or the person spoke last. A question already answered is before the person's words.
+   */
   async function readChat(paneKey) {
     const id = chatIdOf(paneKey)
     if (!id) return null
     try {
       const { entries } = await runOrca(['agent', 'read', id, '--limit', '3'], { timeout: ORCA_MS })
-      const words = (entries ?? []).filter((entry) => typeof entry?.text === 'string' && (entry.kind === 'question' || entry.role === 'assistant'))
-      return words.length ? maskSecrets(words.map((entry) => entry.text).join('\n')) : null
+      const list = entries ?? []
+      const last = list
+        .slice(list.findLastIndex((entry) => entry?.role === 'user') + 1)
+        .findLast((entry) => typeof entry?.text === 'string' && (entry.kind === 'question' || entry.role === 'assistant'))
+      return last ? maskSecrets(last.text) : null
     } catch (err) {
       orca.log(`could not read a chat: ${errText(err)}`)
       return null
@@ -862,15 +868,27 @@ export default async function activate(orca) {
   let pendingSaved = JSON.stringify(Object.fromEntries(pending))
   let retrying = false
   async function retryPending(terminal) {
-    if (retrying) return
+    if (retrying || pending.size === 0) return
     retrying = true
     try {
+      const settings = await readSettings(orca)
+      // A bot that still refuses is not asked again this time; the others' mails still go.
+      const refused = new Set()
       for (const [key, entry] of pending) {
-        if (entry.terminal === terminal || Date.now() - entry.at >= RECORD_MS) pending.delete(key)
-        else if (await sendMail(orca, entry.bot, entry.mail)) {
+        if (entry.terminal === terminal || Date.now() - entry.at >= RECORD_MS) {
+          pending.delete(key)
+          continue
+        }
+        if (refused.has(entry.botKey)) continue
+        // orcaBots may have changed since: a bot no longer named for that workspace does not get it.
+        if (!(await botTargets(settings, entry.where ?? {})).some((bot) => bot.key === entry.botKey)) {
+          pending.delete(key)
+          continue
+        }
+        if (await sendMail(orca, entry.bot, entry.mail)) {
           pending.delete(key)
           debouncerFor(entry.botKey).delivered(entry.terminal, entry.state)
-        } else break // Orca still refuses: the rest wait for the next event.
+        } else refused.add(entry.botKey)
       }
     } finally {
       retrying = false
@@ -909,7 +927,7 @@ export default async function activate(orca) {
         if (await sendMail(orca, bot.bot, mail, (name) => count(bot, name))) continue
         // Not mailed is not sent: this terminal's next report, or any other event, tries again.
         debouncerFor(bot.key).forget(terminal, state)
-        pending.set(`${bot.key}#${terminal}`, { bot: bot.bot, botKey: bot.key, terminal, state, mail, at: now })
+        pending.set(`${bot.key}#${terminal}`, { bot: bot.bot, botKey: bot.key, terminal, state, mail, at: now, where: { name: info.name, repo: info.repo, path: info.path } })
       }
     } catch (err) {
       orca.log(`Orca bot forward failed: ${errText(err)}`)

@@ -779,7 +779,7 @@ if (script.botsDown) {
   fs.writeFileSync(
     path.join(fake, 'orchestration'),
     `${head}if (process.argv[2] === 'inbox') answer({ messages: [] })
-else if (script.mailDown) {
+else if (script.mailDown || (script.downBots ?? []).some((bot) => process.argv.includes('--to=' + bot))) {
   process.stdout.write(JSON.stringify({ ok: false, error: { message: 'orca is down' } }))
   process.exitCode = 1
 } else {
@@ -981,4 +981,46 @@ test('Orca bot mail: a stopped terminal is retried at any event, chats and done 
   const [chat, ...others] = mails()
   assert.equal(others.length, 0, 'a chat whose last words ask nothing stays quiet')
   assert.match(chat.body, /\nasks: main으로 머지할까요\?\nread: orca agent read c7 --limit 3\n/)
+})
+
+
+test('Orca bot mail: an answered chat question stays quiet, one refusing bot holds back no other, a bot taken out gets nothing', async (t) => {
+  const git = gitFixture()
+  t.after(() => git.cleanup())
+  const { script, mails } = fakeBotOrca(t)
+  const terminals = { t1: screen(['● 작업 중']), t5: screen(['● 권한이 필요합니다']) }
+  const mock = mockOrca([{ id: 'wt1', kind: 'worktree', name: 'main', branch: 'main', path: git.worktree }], terminals)
+  Object.assign(mock.settings, { grokProjectAlerts: false, orcaBots: '노리\n쿠어' })
+  await activate(mock.orca)
+  const { emit, logs, settings } = mock
+  const chat = (id, state = 'done') => ({ workspaceId: 'wt1', paneKey: `structured-agent-session-${id}:x`, title: 'chat', state, receivedAt: 1 })
+  const event = (terminalId, state) => ({ workspaceId: 'wt1', paneKey: `p:${terminalId}`, terminalId, title: 'x', state, receivedAt: 1 })
+
+  // Only what came after the person's last words counts: an answered question is not asked again.
+  script({
+    chats: {
+      c1: [{ kind: 'message', role: 'assistant', text: 'A로 할까요?' }, { kind: 'message', role: 'user', text: '응' }, { kind: 'message', role: 'assistant', text: '완료했습니다.' }],
+      c2: [{ kind: 'message', role: 'user', text: '해 줘' }, { kind: 'message', role: 'assistant', text: '확인했어요.' }, { kind: 'question', text: 'B로 할까요?', pending: true }],
+    },
+  })
+  await emit(chat('c1'))
+  await emit(chat('c2', 'blocked'))
+  assert.deepEqual(mails().map((mail) => [mail.to, mail.body.split('\n')[2]]), [
+    ['bot:노리', 'asks: B로 할까요?'],
+    ['bot:쿠어', 'asks: B로 할까요?'],
+  ])
+
+  // Both refuse; then 노리 still does: 쿠어's mail goes anyway.
+  script({ mailDown: true })
+  await emit(event('t5', 'blocked'))
+  script({ downBots: ['bot:노리'] })
+  await emit(event('t1', 'working'))
+  assert.deepEqual(mails().map((mail) => mail.to), ['bot:쿠어'])
+  // 노리 is taken out of orcaBots: its waiting mail is dropped, not tried at every event.
+  settings.orcaBots = '쿠어'
+  const tried = logs.filter((line) => line.startsWith('Orca bot 노리 mail failed')).length
+  await emit(event('t1', 'working'))
+  await emit(event('t1', 'working'))
+  assert.equal(logs.filter((line) => line.startsWith('Orca bot 노리 mail failed')).length, tried)
+  assert.equal(mails().length, 0)
 })

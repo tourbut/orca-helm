@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.1
+
+- A Claude Code question card (AskUserQuestion) in a terminal now reaches the Orca bot. Orca reports it as `waiting`, and its words need no `?` ("아무거나 고르세요."), so 0.7.0 took it for an idle screen and sent nothing (measured 2026-11-26). The card's footer (`Enter to select`, `Esc to cancel`) now counts as asking; the mail carries the card's question and choices.
+- A chat's words are read only after the person last spoke, so a question already answered is not sent again.
+- A terminal mail waiting for a retry no longer waits behind another bot's refused one, and is dropped when `orcaBots` no longer names that bot for its workspace.
+
 ## 0.7.0
 
 - grokbot-notify hands what needs a person to an Orca bot as local mail (`orca orchestration send --to bot:<name> --type question`): blocked terminals and chats, a `done` or `waiting` whose last words ask something, and FullOps decisions, ask/blocked judgments, holds, failures and escalations. New setting `orcaBots`; empty means the only bot in `orca bot list`.
