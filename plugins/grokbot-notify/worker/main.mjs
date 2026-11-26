@@ -7,8 +7,12 @@ import { askDir, askFile, isAskId, isOpen, loadJson, saveJson } from '../../../l
 import { runOrca } from '../../../lib/orca.mjs'
 import {
   DECISION_VERSION,
+  RECORD_MS,
   botItemPayload,
+  botMail,
+  botRoute,
   buildPayload,
+  chatIdOf,
   createDebouncer,
   decisionPayload,
   gitCommonDir,
@@ -16,8 +20,10 @@ import {
   isHttpUrl,
   isStartScreen,
   judgmentPayload,
+  maskSecrets,
   matchesWorkspace,
   messagePayload,
+  parseBots,
   parseRoutes,
   parseStates,
   questionPayload,
@@ -27,6 +33,7 @@ import {
   routeProblem,
   screenText,
   stripAuthPrefix,
+  tailNeedsInput,
   text,
   upsertRouteLine,
   workspaceOptions,
@@ -46,8 +53,14 @@ const COUNTS_KEY = 'alertCounts'
 const COUNT_DAYS = 14
 const COUNTS_SAVE_MS = 60_000
 const ORCA_MS = 10_000
+// Terminal mails an Orca bot did not get yet, tried again at any event.
+const PENDING_KEY = 'botPending'
+// After `orca bot list` fails, the default bot is not looked up again for this long.
+const BOTS_RETRY_MS = 60_000
 // Older FullOps records are history, not news: they keep their files, and a new route or install must not replay them.
 const RECENT_MS = 24 * 60 * 60_000
+// A bot's first-look summary names at most this many items.
+const SUMMARY_LINES = 10
 
 function errText(err) {
   return err?.message ?? String(err)
@@ -356,6 +369,7 @@ const failure = (err) => err.cause?.code ?? err.name
  * `note` counts the second POST and the outcome: a timeout apart, since Grok Bot may have got that one.
  */
 async function deliver(orca, route, payload, auth, note = () => {}) {
+  if (route.bot) return mailBot(orca, route, payload, note)
   const who = `Grok Bot routine${route.name ? ` ${route.name}` : ''}`
   const body = JSON.stringify(payload)
   const attempt = () => post(route.url, body, auth).catch((err) => (err instanceof Error ? err : new Error(String(err))))
@@ -377,6 +391,35 @@ async function deliver(orca, route, payload, auth, note = () => {}) {
   }
   return result
 }
+
+/**
+ * Mail an Orca bot on this PC (no login, no webhook). 200 when Orca took it, so callers treat it like a POST.
+ * shortcut: a timeout counts as failed and the alert goes again next time; a bot may then get it twice.
+ */
+async function mailBot(orca, route, payload, note) {
+  return (await sendMail(orca, route.bot, botMail(payload), note)) ? 200 : null
+}
+
+/** One botMail to `bot`; true when Orca took it. Logs name the bot, never the body. */
+async function sendMail(orca, bot, { type, subject, body }, note = () => {}) {
+  try {
+    await runOrca(['orchestration', 'send', `--to=bot:${bot}`, `--type=${type}`, `--subject=${subject}`, `--body=${body}`], { timeout: ORCA_MS })
+    return true
+  } catch (err) {
+    orca.log(`Orca bot ${bot} mail failed: ${errText(err)}`)
+    note('mail.failed')
+    return false
+  }
+}
+
+const remindMsOf = (settings) => {
+  const minutes = Number(settings.remindMinutes ?? 0)
+  return Math.max(0, Number.isFinite(minutes) ? minutes : 0) * 60_000
+}
+// The same terminal, state and output is the same event: a retry or reminder keeps the id.
+const terminalEventId = (event, terminal, tailKey, now) => idOf(`${terminal}|${event.state}|${tailKey ?? event.mainAgent?.stateStartedAt ?? event.receivedAt ?? now}`)
+// Project events (agent states, FullOps events, question cards) went to Grok Bot routes up to 0.6.0; an Orca bot takes them now.
+const toGrok = (settings) => settings.grokProjectAlerts === true
 
 /** Today's counts per route, kept COUNT_DAYS; a new day logs the last day's totals, so `orca plugin logs` shows them. */
 function createCounts(orca, saved) {
@@ -436,6 +479,9 @@ export default async function activate(orca) {
     try {
       if (recordsChanged) await orca.storage.set(RECORDS_KEY, { routes })
       savedRecords = records
+      const unsent = JSON.stringify(Object.fromEntries(pending))
+      if (unsent !== pendingSaved) await orca.storage.set(PENDING_KEY, Object.fromEntries(pending))
+      pendingSaved = unsent
       if ((recordsChanged || now - countsSavedAt >= COUNTS_SAVE_MS) && count.take()) {
         await orca.storage.set(COUNTS_KEY, count.days)
         countsSavedAt = now
@@ -462,6 +508,7 @@ export default async function activate(orca) {
     try {
       await migrateAuth(orca, seen)
       const settings = await readSettings(orca)
+      if (!test && !toGrok(settings)) return null
       const routes = readRoutes(settings)
       if (routes.length === 0) {
         if (!warnedNoUrl) {
@@ -478,8 +525,7 @@ export default async function activate(orca) {
       const matched = test ? routes : routes.filter((route) => matchesWorkspace(route.workspaces, info ?? {}))
       if (matched.length === 0) return null
 
-      const minutes = Number(settings.remindMinutes ?? 0)
-      const remindMs = Math.max(0, Number.isFinite(minutes) ? minutes : 0) * 60_000
+      const remindMs = remindMsOf(settings)
       const terminal = event.terminalId ?? event.paneKey
       const wanted = test || parseStates(settings.states).has(event.state)
       // `working` output changes all the time, so that state stays state-only even when `states` includes it.
@@ -498,8 +544,7 @@ export default async function activate(orca) {
       if (due.length === 0) return null
 
       const where = info ?? (await workspaceInfo(orca, event.workspaceId))
-      // The same terminal, state and output is the same event: a retry or reminder keeps the id.
-      const eventId = idOf(`${terminal}|${event.state}|${tailKey ?? event.mainAgent?.stateStartedAt ?? event.receivedAt ?? now}`)
+      const eventId = terminalEventId(event, terminal, tailKey, now)
       const payload = (route, why) =>
         buildPayload(event, {
           worktree: where.name,
@@ -574,7 +619,8 @@ export default async function activate(orca) {
       const info = await workspaceInfo(orca, event.workspaceId)
       if (!isFullOps(info.path)) return carried
       const settings = await readSettings(orca)
-      const routes = readRoutes(settings).filter((route) => matchesWorkspace(route.workspaces, info))
+      const grok = toGrok(settings) ? readRoutes(settings).filter((route) => matchesWorkspace(route.workspaces, info)) : []
+      const routes = [...grok, ...(await botTargets(settings, info))]
       if (routes.length === 0) return carried
       const common = gitCommonDir(info.path, gitFileOf(info.path))
       const alerts = recordAlerts(orca, common, settings, warned)
@@ -626,7 +672,9 @@ export default async function activate(orca) {
       asking.add(id)
       try {
         const where = await workspaceInfo(orca, question.workspaceId)
-        const routes = readRoutes(await readSettings(orca)).filter((route) => matchesWorkspace(route.workspaces, where))
+        const settings = await readSettings(orca)
+        // None: a <id>.sent.json naming no route shows the card at once; an Orca bot learns of it from the terminal's state.
+        const routes = toGrok(settings) ? readRoutes(settings).filter((route) => matchesWorkspace(route.workspaces, where)) : []
         // All routes at once: one slow bot must not keep the hook past its wait for <id>.sent.json.
         const tried = await Promise.all(
           routes.map(async (route) => {
@@ -668,15 +716,33 @@ export default async function activate(orca) {
    */
   async function announceOnce(routes, scope, alerts, info, { forgets = () => true, ride = () => null, carried = new Set(), counter = 'fullops' } = {}) {
     const live = new Set(alerts.map((alert) => `${scope}#${alert.id}`))
+    const seen = `${scope}#*`
+    const where = { repo: info.repo, worktree: info.name, branch: info.branch, host: os.hostname() }
     let changed = false
     for (const route of routes) {
       const riding = ride(route)
       const sent = announced.get(route.key) ?? announced.set(route.key, new Set()).get(route.key)
       for (const key of sent) {
-        if (key.startsWith(`${scope}#`) && !live.has(key) && forgets(key)) {
+        if (key.startsWith(`${scope}#`) && key !== seen && !live.has(key) && forgets(key)) {
           sent.delete(key)
           changed = true
         }
+      }
+      // An Orca bot's first look at a scope (just installed or named): what is already open goes as one summary mail.
+      if (route.bot && !sent.has(seen)) {
+        if (alerts.length > 1) {
+          const texts = alerts.map((alert) => `- ${alert.payload({ ...where, route: route.name }).text}`)
+          const summary = {
+            text: `${info.repo ?? info.name ?? 'Orca'}: ${alerts.length} open items wait for a person (first look; new ones come one by one)`,
+            ...where,
+            lines: texts.length > SUMMARY_LINES ? [...texts.slice(0, SUMMARY_LINES), `- and ${texts.length - SUMMARY_LINES} more`] : texts,
+          }
+          if (!ok(await deliver(orca, route, summary, null, (name) => count(route, `${counter}.${name}`)))) continue
+          for (const alert of alerts) sent.add(`${scope}#${alert.id}`)
+          count(route, `${counter}.summary`)
+        }
+        sent.add(seen)
+        changed = true
       }
       for (const alert of alerts) {
         const key = `${scope}#${alert.id}`
@@ -746,11 +812,116 @@ export default async function activate(orca) {
     }
   }
 
+  /** `orcaBots` named none: the one bot `orca bot list` shows, read once per worker; with several, none and a log line. */
+  let defaultBots = null
+  let botsFailedAt = -Infinity
+  /** The Orca bots that get this workspace's alerts; never a bot its own chat (its folder under ~/.orca/bots). */
+  async function botTargets(settings, info) {
+    let bots = parseBots(settings.orcaBots)
+    if (!bots) {
+      if (!defaultBots) {
+        // A hung or failing `orca` is not asked again on every event: an event already waits up to ORCA_MS on it.
+        if (Date.now() - botsFailedAt < BOTS_RETRY_MS) return []
+        try {
+          const listed = ((await runOrca(['bot', 'list'], { timeout: ORCA_MS }))?.bots ?? []).filter((bot) => bot?.name && !bot.paused)
+          if (listed.length !== 1) orca.log(`${listed.length} Orca bots and no orcaBots setting: project alerts go to no bot`)
+          defaultBots = listed.length === 1 ? [botRoute(listed[0].name)] : []
+          warned.delete('bots')
+        } catch (err) {
+          if (!warned.has('bots')) orca.log(`could not list Orca bots: ${errText(err)}`)
+          warned.add('bots')
+          botsFailedAt = Date.now()
+          return []
+        }
+      }
+      bots = defaultBots
+    }
+    const own = info.path ? botOf(info.path)?.name.toLowerCase() : undefined
+    return bots.filter((bot) => bot.bot.toLowerCase() !== own && matchesWorkspace(bot.workspaces, info))
+  }
+
+  /** The chat's last words (an assistant message or a pending question card), masked; null when it cannot be read. */
+  async function readChat(paneKey) {
+    const id = chatIdOf(paneKey)
+    if (!id) return null
+    try {
+      const { entries } = await runOrca(['agent', 'read', id, '--limit', '3'], { timeout: ORCA_MS })
+      const words = (entries ?? []).filter((entry) => typeof entry?.text === 'string' && (entry.kind === 'question' || entry.role === 'assistant'))
+      return words.length ? maskSecrets(words.map((entry) => entry.text).join('\n')) : null
+    } catch (err) {
+      orca.log(`could not read a chat: ${errText(err)}`)
+      return null
+    }
+  }
+
+  /**
+   * Terminal mails Orca refused, by `<bot key>#<terminal>`. A terminal stopped on a question reports nothing more, so
+   * every event tries them again, until that terminal reports anything (its own report then decides) or RECORD_MS.
+   */
+  const pending = new Map(Object.entries((await load(PENDING_KEY, 'unsent Orca bot mails')) ?? {}).filter(([, entry]) => entry?.mail && Date.now() - entry.at < RECORD_MS))
+  let pendingSaved = JSON.stringify(Object.fromEntries(pending))
+  let retrying = false
+  async function retryPending(terminal) {
+    if (retrying) return
+    retrying = true
+    try {
+      for (const [key, entry] of pending) {
+        if (entry.terminal === terminal || Date.now() - entry.at >= RECORD_MS) pending.delete(key)
+        else if (await sendMail(orca, entry.bot, entry.mail)) {
+          pending.delete(key)
+          debouncerFor(entry.botKey).delivered(entry.terminal, entry.state)
+        } else break // Orca still refuses: the rest wait for the next event.
+      }
+    } finally {
+      retrying = false
+    }
+  }
+
+  /**
+   * A terminal or chat waiting for a person goes to its project's Orca bots by local mail: `blocked` (a permission
+   * prompt or question card) always; `waiting` and `done` only when the last words ask something, since Claude Code
+   * reports `waiting` after every turn and other agents only `done`. Both are one alert for the same words. After
+   * `working`, a `blocked` goes again even on the same screen; a question in the same words does not.
+   */
+  async function forwardTerminalToBots(event) {
+    const { state } = event
+    const terminal = event.terminalId ?? event.paneKey
+    await retryPending(terminal)
+    if (state !== 'working' && state !== 'blocked' && state !== 'waiting' && state !== 'done') return
+    try {
+      const settings = await readSettings(orca)
+      const info = await workspaceInfo(orca, event.workspaceId)
+      const bots = await botTargets(settings, info)
+      if (bots.length === 0) return
+      const now = Date.now()
+      if (state === 'working') return void bots.forEach((bot) => debouncerFor(bot.key)(terminal, state, now, 0))
+      const screen = event.terminalId ? await readScreen(orca, event.terminalId) : await readChat(event.paneKey)
+      if (state !== 'blocked' && !tailNeedsInput(screen)) return
+      const tailKey = screen && tailKeyOf(screen)
+      const remindMs = remindMsOf(settings)
+      const eventId = terminalEventId(event, terminal, tailKey, now)
+      for (const bot of bots) {
+        const { send, why } = debouncerFor(bot.key)(terminal, state, now, remindMs, tailKey)
+        count(bot, `${send ? 'sent' : 'held'}.${why}`)
+        if (!send) continue
+        const payload = buildPayload(event, { worktree: info.name, branch: info.branch, repo: info.repo, route: bot.name, host: os.hostname(), screen, eventId, reminder: why === 'reminder' })
+        const mail = botMail(payload)
+        if (await sendMail(orca, bot.bot, mail, (name) => count(bot, name))) continue
+        // Not mailed is not sent: this terminal's next report, or any other event, tries again.
+        debouncerFor(bot.key).forget(terminal, state)
+        pending.set(`${bot.key}#${terminal}`, { bot: bot.bot, botKey: bot.key, terminal, state, mail, at: now })
+      }
+    } catch (err) {
+      orca.log(`Orca bot forward failed: ${errText(err)}`)
+    }
+  }
+
   orca.events.on('agent.status.changed', async (event) => {
     const terminal = await terminalAlert(event)
     const carried = await forwardFullOps(event, terminal)
     await forwardBotItems(event, terminal, carried)
     const result = await sendTerminal(terminal, carried)
+    await forwardTerminalToBots(event)
     await persist()
     await forwardQuestions()
     return result
