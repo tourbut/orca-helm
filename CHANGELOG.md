@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.2
+
+- Orca bot mail now actually goes out. Orca takes `orca orchestration send` only from a sender it can name, and a plugin worker is none, so 0.7.0 and 0.7.1 were refused (`Could not determine the calling terminal`, measured 2026-11-26). A terminal's alert is now sent `--from` that terminal. A chat cannot be named as a sender (`session_caller_chat_not_declarable`), so a chat's alert and FullOps events borrow a live terminal: the repo's FullOps coordinator, else one in the same worktree. The body's first line then names the real source and says the terminal did not ask. With no live terminal the mail waits and is tried again.
+- The mail is `--type status`: a `question` would send the bot's answer to the sender's mailbox, the stopped agent's or a borrowed terminal's. The bot answers by the handle in the body.
+
 ## 0.7.1
 
 - A Claude Code question card (AskUserQuestion) in a terminal now reaches the Orca bot. Orca reports it as `waiting`, and its words need no `?` ("아무거나 고르세요."), so 0.7.0 took it for an idle screen and sent nothing (measured 2026-11-26). A line that starts with the card's footer (`Enter to select`, `Esc to cancel`), under at least one numbered choice, now counts as asking; the mail carries the card's question and choices. Words that only quote the footer do not.

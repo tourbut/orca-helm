@@ -305,7 +305,8 @@ export const chatIdOf = (paneKey) => /^structured-agent-session-([^:]+):/.exec(p
 
 /**
  * Local mail for an Orca bot from an alert payload: the one-line `text`, where it is, and how to look or answer,
- * masked. The bot picks what reaches its owner, so it stays a few lines. `question`: each one waits for a person.
+ * masked. The bot picks what reaches its owner, so it stays a few lines. `status`: a `question` would send the bot's
+ * answer to the sender's mailbox, which is the stopped agent's (or a borrowed terminal's); the bot answers by the handle.
  * `lines` go under the place (a summary's items). The quoted text came from a screen or a record, so it says so.
  */
 export function botMail(payload) {
@@ -325,7 +326,7 @@ export function botMail(payload) {
       .filter(Boolean)
       .join('\n')
   )
-  return { type: 'question', subject: clip(body.split('\n', 1)[0], 80), body }
+  return { type: 'status', subject: clip(body.split('\n', 1)[0], 80), body }
 }
 
 const folded = (value) => String(value ?? '').toLowerCase().replaceAll('\\', '/')

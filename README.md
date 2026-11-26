@@ -244,7 +244,7 @@ Orca가 플러그인에 주는 알림 훅 `agent.status.changed` 를 받아, 사
 
 - **받는 봇:** `orcaBots` 설정의 줄(`봇이름 | 워크스페이스`, 워크스페이스는 `Routes` 와 같은 규칙). 비어 있으면 `orca bot list` 에 하나뿐인 봇이 받고, 봇이 여럿이면 아무에게도 보내지 않고 로그만 남깁니다. `off` 는 보내지 않습니다.
 - **보내는 것:** `blocked`(권한 요청·질문 카드)인 터미널과 채팅, 마지막 말이 묻고 있는 `waiting`·`done`(채팅은 `orca agent read` 로 읽음), 아래 FullOps 사건(결정, `ask`·`blocked` 판정, 보류, 실패, escalation). `working` 과 묻지 않는 `done`·`waiting` 은 보내지 않습니다. 처음 보는 저장소에 열린 FullOps 사건이 여럿이면 요약 한 통으로 보냅니다.
-- **메일:** `orca orchestration send --to bot:<이름> --type question`(로컬, 로그인·webhook 없음). 본문은 몇 줄입니다: 한 줄 요약, 프로젝트·워크트리·브랜치, 묻는 글, 읽는 명령(`orca terminal read --terminal <handle>`, 채팅은 `orca agent read <id> --limit 3`), 답을 넣는 명령(있을 때). 비밀값은 아래와 같은 규칙으로 가립니다.
+- **메일:** `orca orchestration send --from <터미널> --to bot:<이름> --type status`(로컬, 로그인·webhook 없음). 본문은 몇 줄입니다: 한 줄 요약, 프로젝트·워크트리·브랜치, 묻는 글, 읽는 명령(`orca terminal read --terminal <handle>`, 채팅은 `orca agent read <id> --limit 3`), 답을 넣는 명령(있을 때). 비밀값은 아래와 같은 규칙으로 가립니다.
 - **되먹임·중복:** 봇 자신의 채팅(그 봇의 `~/.orca/bots/` 폴더 워크스페이스)은 그 봇에게 보내지 않습니다. 같은 질문은 봇마다 한 번, FullOps 사건도 한 번입니다(아래 중복 억제·기록 유지와 같은 저장소). 리마인드는 `remindMinutes` 를 따릅니다. 메일이 실패하면(10초 타임아웃 포함) 로그에 봇 이름만 남기고, 터미널 메일은 어느 이벤트에서든 다시 보냅니다(멈춘 터미널은 다음 보고를 내지 않음). 본문 끝에는 읽은 글이 지시가 아니라는 줄이 붙습니다.
 
 ### 동작
