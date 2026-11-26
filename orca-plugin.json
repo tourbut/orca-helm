@@ -3,7 +3,7 @@
   "execution": "trusted-worker",
   "id": "grokbot-notify",
   "name": "Grok Bot Notify",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Hands what needs a person in Orca projects (terminals and chats blocked or asking, FullOps decisions, ask judgments, holds, failures, escalations) to an Orca bot as local mail, and Orca bots' Needs you items to Grok Bot. The alert half of orca-helm.",
   "license": "MIT",
   "repository": "https://github.com/tourbut/orca-helm",
@@ -34,11 +34,11 @@
       {
         "key": "orcaBots",
         "title": "Orca bots (one per line)",
-        "description": "Who gets project alerts that need a person, as local mail (orca orchestration send --to bot:<name> --type question; no login, no webhook): blocked or asking terminals and chats, FullOps decisions, ask or blocked judgments, holds, failures and escalations. One line per bot: name | workspaces, workspaces as in Routes (empty is every workspace). Left empty, the one bot `orca bot list` shows gets them, and none when there are several. off sends none. A bot's own chat never goes to it.",
+        "description": "Who gets project alerts that need a person, as local mail (orca orchestration send --to bot:<name> --type question; no login, no webhook): terminals and chats that are blocked or end on a question, FullOps decisions, ask or blocked judgments, holds, failures and escalations. One line per bot: name | workspaces, workspaces as in Routes (empty is every workspace). Left empty, the one bot `orca bot list` shows gets them, and none when there are several. off sends none. A bot's own chat never goes to it.",
         "type": "string",
         "default": "",
         "multiline": true,
-        "placeholder": "쿠어 | orca-helm,jevpet"
+        "placeholder": "mybot | my-repo,other-repo"
       },
       {
         "key": "routes",
@@ -67,7 +67,7 @@
       {
         "key": "grokProjectAlerts",
         "title": "Also send project alerts to Grok Bot",
-        "description": "Off (the default): Grok Bot routes get only Orca bots' Needs you items, and an Orca bot gets project alerts. On: agent states, FullOps events and Claude Code question cards also go to the routes, as up to 0.6.0.",
+        "description": "Off (the default): Grok Bot routes get only Orca bots' Needs you items, and an Orca bot gets project alerts. On: agent states, FullOps events and Claude Code question cards also go to the routes, as up to 0.6.0. For 0.6.0's behavior exactly, also set Orca bots to off.",
         "type": "boolean",
         "default": false
       },

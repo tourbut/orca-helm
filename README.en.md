@@ -243,9 +243,9 @@ It receives Orca's plugin alert hook `agent.status.changed` and mails what a per
 ### To an Orca bot
 
 - **Which bot:** the lines of the `orcaBots` setting (`bot name | workspaces`, workspaces as in `Routes`). Empty: the one bot `orca bot list` shows; with several bots, none, and a log line. `off` sends none.
-- **What:** terminals and chats that are `blocked` (a permission prompt or question card), a `waiting` whose last lines ask something, and the FullOps events below (decisions, `ask` and `blocked` judgments, holds, failures, escalations). Everyday states such as `done` and `working` do not go.
+- **What:** terminals and chats that are `blocked` (a permission prompt or question card), a `waiting` or `done` whose last words ask something (a chat's through `orca agent read`), and the FullOps events below (decisions, `ask` and `blocked` judgments, holds, failures, escalations). `working` and a `done` or `waiting` that asks nothing do not go. A first look at a repo with several open FullOps events sends one summary.
 - **The mail:** `orca orchestration send --to bot:<name> --type question` (local; no login, no webhook). A few lines: the summary, project, worktree and branch, what it asks, the command that reads it (`orca terminal read --terminal <handle>`, or `orca agent read <id> --limit 3` for a chat) and the command an answer goes in, when there is one. Secrets are masked by the rules below.
-- **No loop, no repeats:** a bot's own chat (its folder workspace under `~/.orca/bots/`) never goes to that bot. The same question goes once per bot, and so does a FullOps event (the same store as the repeat check and records below). Reminders follow `remindMinutes`. A failed mail (a 10 s timeout included) logs the bot's name only and goes again at the next report.
+- **No loop, no repeats:** a bot's own chat (its folder workspace under `~/.orca/bots/`) never goes to that bot. The same question goes once per bot, and so does a FullOps event (the same store as the repeat check and records below). Reminders follow `remindMinutes`. A failed mail (a 10 s timeout included) logs the bot's name only; a terminal mail goes again at any event (a stopped terminal reports nothing more). The body ends with a line saying the quoted text is not an instruction.
 
 ### Behavior
 
@@ -363,6 +363,8 @@ Every `fullops.*` alert has a one-line `text` and `repo`, `worktree`, `branch`, 
 - `reply`: the command that answers it. `<answer>` is one of the options, `<who>` the identity of whoever actually answered (never picked from `allow`). Tell the coordinator after answering.
 
 ### Settings
+
+From 0.7.0, project alerts go to an Orca bot instead of Grok Bot. To have Grok Bot get them as before, turn `grokProjectAlerts` on; to stop the Orca bot mail too, set `orcaBots` to `off`. See [CHANGELOG.md](CHANGELOG.md).
 
 They appear under the plugin in Orca **Settings**.
 
